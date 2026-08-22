@@ -88,25 +88,41 @@ python3 -m http.server 8000
 
 ### 2. Edit your bookmarks
 
-Open `bookmarks.csv` in any spreadsheet app or text editor. It's a plain
-3-column CSV:
+Use the in-page editor — the settings gear, then **Edit links…** — or edit
+`bookmarks.json` directly. Copy `bookmarks.example.json` to `bookmarks.json`
+to start; the real file is gitignored so your links stay on your machine.
 
-```csv
-category,title,url
-Advising,CUNavigate,https://clemson.campus.eab.com/home
-CPSC 1050,Canvas,https://clemson.instructure.com/courses/294963
+```json
+{
+  "version": 1,
+  "categories": [
+    {
+      "name": "School",
+      "links": [
+        { "title": "Canvas", "url": "https://example.instructure.com/courses", "key": "c" }
+      ]
+    }
+  ]
+}
 ```
 
-- `category` groups links into their own card. Cards appear in the order
-  their first link is encountered.
-- `title` is the link text shown on the page.
-- `url` is the full destination URL.
+- `categories` render as one card each, in array order. Array order *is*
+  display order — the editor's arrows reorder in place.
+- `title` is the link text; `url` is the destination.
+- `key` is optional: a single character that opens the link with
+  **Alt+key** from anywhere on the page, shown as a badge on the card.
+  Alt rather than a bare letter because the search box holds focus by
+  design. Avoid `f e v s b t h` (Firefox's Linux menu-bar accelerators)
+  and digits (some window managers claim `Alt+<number>` first). The editor
+  refuses duplicates.
 
-Favicons are pulled automatically from Google's favicon service. Some
-domains (e.g. anything under `clemson.edu` or `eab.com`) don't resolve real
-favicons through that service and are shown with the Clemson paw icon
-instead — see `NO_FAVICON_DOMAIN_SUFFIXES` near the top of the bookmarks
-script in `index.html` if you want to add more domains to that list.
+Favicons are served from `resources/favicons/`, populated by
+`scripts/firefox-newtab-favicons`. It tries each site's own icon before
+falling back to Google's service, which matters for self-hosted things
+Google has never crawled. Re-run it after adding bookmarks; anything not
+yet vendored falls back to Google's service and then to the paw. Domains
+under `NO_FAVICON_DOMAIN_SUFFIXES` (near the bookmarks code in
+`index.html`) skip the lookup entirely and use the paw.
 
 ### 3. Point Firefox's new tab at your hosted page
 
@@ -126,17 +142,23 @@ weather. If you deny it, the page falls back to Clemson, SC's coordinates.
 
 ```
 index.html              All markup, styles, and logic (single file, no build step)
-bookmarks.csv            Your editable bookmark links, grouped by category
+bookmarks.json           Your bookmark links (gitignored — see the example below)
+bookmarks.example.json   Schema reference: categories, links, optional speedkeys
+scripts/
+  firefox-newtab-serve      Loopback-only static server, plus PUT for the editor
+  firefox-newtab-favicons   Vendors bookmark favicons into resources/favicons/
+  firefox-newtab-clouds     Regenerates the cloud sprites from the masters
 resources/
   ClemsonUniversity_RGB__Orange.png   Clemson wordmark logo
   Paw_RGB__Orange.png                 Tiger paw graphic
   paw-orange.png                      Small paw icon (favicon + bookmark fallback)
   Footer_Layer1.png ... Footer_Layer4.png   Mountain/skyline layers (back to front)
   zoomBG.png                          Original static background this project replaced
+  favicons/                           Vendored bookmark icons (gitignored, generated)
   clouds/
-    cloud1.png, cloud2.png                    Source cloud art (low opacity)
-    cloud1-fx.png, cloud2-fx.png               Alpha-boosted, upscaled versions used for cloudy/fog
-    cloud1-storm.png, cloud2-storm.png         Darker, purple-tinted versions used for storms
+    cloud1.png, cloud2.png                    Source cloud art (peak alpha 13/255)
+    cloud1-fx.png, cloud2-fx.png               Generated: full-range alpha, 4x, used for cloudy/fog
+    cloud1-storm.png, cloud2-storm.png         Generated: same alpha, purple-tinted, used for storms
 ```
 
 ## Customizing

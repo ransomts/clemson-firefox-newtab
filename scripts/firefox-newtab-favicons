@@ -1,0 +1,168 @@
+#!/usr/bin/env python3
+"""Vendor bookmark favicons into resources/favicons/ for the new-tab page.
+
+The page used to pull every icon from Google's favicon service on each
+load. That costs a 301 plus an image fetch per bookmark, all to one host
+(so the browser's per-host limit serialises them into waves), and Google
+returns cache-control: max-age=1800 - so the whole set re-expires every
+half hour and the icons visibly pop in again. It also hands Google the
+list of sites you keep bookmarked, twice an hour.
+
+Fetching them once into a local directory turns that into a ~1ms loopback
+read that paints with the layout.
+
+Unlike the page, this script can try each site's *own* favicon first: the
+CORS and inconsistent-path problems that pushed index.html onto Google's
+service are browser constraints, and don't apply here. That matters most
+for self-hosted services, which Google has never crawled and would serve
+a generic globe for.
+
+Re-run after adding a bookmark. Hosts under NO_FAVICON_DOMAIN_SUFFIXES
+are skipped - the page short-circuits those to the paw icon already.
+"""
+import io
+import json
+import os
+import sys
+import urllib.error
+import urllib.request
+from html.parser import HTMLParser
+from urllib.parse import urljoin, urlparse
+
+from PIL import Image
+
+# Override with FIREFOX_NEWTAB_ROOT if the clone lives elsewhere.
+ROOT = os.environ.get(
+    "FIREFOX_NEWTAB_ROOT",
+    os.path.expanduser("~/.local/share/firefox-newtab"),
+)
+OUT = os.path.join(ROOT, "resources", "favicons")
+SIZE = 64
+TIMEOUT = 6
+
+# Must match the constant of the same name in index.html.
+NO_FAVICON_DOMAIN_SUFFIXES = ["clemson.edu", "eab.com"]
+
+UA = "Mozilla/5.0 (X11; Linux x86_64; rv:154.0) Gecko/20100101 Firefox/154.0"
+
+
+class IconLinkParser(HTMLParser):
+    """Collects href values from <link rel="...icon...">."""
+
+    def __init__(self):
+        super().__init__()
+        self.hrefs = []
+
+    def handle_starttag(self, tag, attrs):
+        if tag != "link":
+            return
+        attr = {k.lower(): (v or "") for k, v in attrs}
+        if "icon" in attr.get("rel", "").lower() and attr.get("href"):
+            self.hrefs.append(attr["href"])
+
+
+def declared_icons(host):
+    """Icons the site's own HTML points at.
+
+    Needed for anything that doesn't serve /favicon.ico at the root -
+    Home Assistant, for one, keeps its icons under /static/icons/ and
+    returns a 404 at the conventional path.
+    """
+    base = "https://%s/" % host
+    try:
+        parser = IconLinkParser()
+        parser.feed(fetch(base).decode("utf-8", "replace"))
+    except (urllib.error.URLError, OSError, ValueError, TimeoutError):
+        return []
+    return [urljoin(base, href) for href in parser.hrefs]
+
+
+def candidates(host):
+    # Conventional paths first: they're one request and usually hit, so
+    # the common case never pays for fetching and parsing a page of HTML.
+    # Google last - it only has icons for sites it has crawled, and
+    # answers for anything else with a generic globe at HTTP 200.
+    # A generator, deliberately: declared_icons() costs an extra request
+    # and only runs if the conventional paths above it all fail.
+    yield "https://%s/favicon.ico" % host
+    yield "https://%s/favicon.png" % host
+    yield "https://%s/apple-touch-icon.png" % host
+    for url in declared_icons(host):
+        yield url
+    yield "https://www.google.com/s2/favicons?sz=%d&domain=%s" % (SIZE, host)
+
+
+def fetch(url):
+    req = urllib.request.Request(url, headers={"User-Agent": UA})
+    with urllib.request.urlopen(req, timeout=TIMEOUT) as resp:
+        return resp.read()
+
+
+def to_png(data):
+    """Return SIZE x SIZE PNG bytes, or None if this isn't a usable image."""
+    # Pillow's ICO loader already opens a multi-resolution .ico at its
+    # largest frame, so there is nothing to pick here.
+    img = Image.open(io.BytesIO(data)).convert("RGBA")
+    if min(img.size) < 8:  # 1x1 tracking pixels and the like
+        return None
+    img.thumbnail((SIZE, SIZE), Image.LANCZOS)
+    buf = io.BytesIO()
+    img.save(buf, "PNG", optimize=True)
+    return buf.getvalue()
+
+
+def hosts_from_bookmarks():
+    doc = json.load(io.open(os.path.join(ROOT, "bookmarks.json"), encoding="utf-8"))
+    seen = []
+    for cat in doc.get("categories", []):
+        for link in cat.get("links", []):
+            host = urlparse(link.get("url", "")).hostname
+            if not host:
+                continue
+            if any(host == s or host.endswith("." + s) for s in NO_FAVICON_DOMAIN_SUFFIXES):
+                continue
+            if host not in seen:
+                seen.append(host)
+    return seen
+
+
+def main():
+    force = "--force" in sys.argv
+    os.makedirs(OUT, exist_ok=True)
+    hosts = hosts_from_bookmarks()
+    if not hosts:
+        print("no hosts needing an icon")
+        return 0
+
+    got = skipped = failed = 0
+    for host in hosts:
+        target = os.path.join(OUT, host + ".png")
+        if os.path.exists(target) and not force:
+            print("  %-38s cached" % host)
+            skipped += 1
+            continue
+        for url in candidates(host):
+            try:
+                png = to_png(fetch(url))
+            except (urllib.error.URLError, OSError, ValueError, TimeoutError):
+                continue
+            if not png:
+                continue
+            tmp = target + ".tmp"
+            with open(tmp, "wb") as fh:
+                fh.write(png)
+            os.replace(tmp, target)
+            src = "own icon" if "google.com/s2" not in url else "google fallback"
+            print("  %-38s %5d bytes  (%s)" % (host, len(png), src))
+            got += 1
+            break
+        else:
+            print("  %-38s FAILED - page falls back to the paw" % host)
+            failed += 1
+
+    print("\n%d fetched, %d already cached, %d failed" % (got, skipped, failed))
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
