@@ -13,3 +13,16 @@
 __pycache__/
 *.pyc
 .venv/
+
+# Written by the in-page bookmark editor
+bookmarks.json.bak
+bookmarks.json.tmp
+
+# Personal bookmark list - the whole point of serving this locally is that
+# it stays on this machine. bookmarks.example.json documents the schema.
+bookmarks.json
+
+# Vendored favicons: derived artefacts, and the filenames are the
+# hostnames of whatever you have bookmarked. Regenerate with
+# scripts/firefox-newtab-favicons.
+resources/favicons/
