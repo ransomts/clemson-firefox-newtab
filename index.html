@@ -194,6 +194,62 @@
     right: 2.5vw;
     width: clamp(64px, 11vw, 210px);
     height: auto;
+    /* .corner-mark sets pointer-events:none so the marks never swallow a
+       click meant for the page. The paw opts back in for its easter egg;
+       an id beats a class, so this wins without touching .corner-mark.
+       No cursor change on purpose - a pointer cursor on hover advertises
+       that there is something here to click, which is the one thing a
+       hidden egg shouldn't do. The arrow stays, the click still lands. */
+    pointer-events: auto;
+  }
+
+  /* Paw prints tracking across the scene. z-index 75 puts them in front
+     of layer1 (70), so they walk over the foreground ridge rather than
+     disappearing behind it. */
+  .paw-print {
+    position: fixed;
+    width: clamp(20px, 2.4vw, 38px);
+    height: auto;
+    z-index: 75;
+    opacity: 0;
+    pointer-events: none;
+    animation: paw-walk 2.6s ease-out forwards;
+  }
+
+  @keyframes paw-walk {
+    0%   { opacity: 0;    transform: translateY(10px) scale(0.65) rotate(var(--paw-rot, 0deg)); }
+    18%  { opacity: 0.95; transform: translateY(0)    scale(1)    rotate(var(--paw-rot, 0deg)); }
+    68%  { opacity: 0.95; }
+    100% { opacity: 0;    transform: translateY(-28px) scale(1)   rotate(var(--paw-rot, 0deg)); }
+  }
+
+  /* Orange wash sits at z-index 5: above the sky gradient, below every
+     layer (layer4 is 20) and below all the text. Tinting the sky reads as
+     atmosphere; tinting the bookmark cards would just look broken. */
+  body.orange-wash .scene::before {
+    content: '';
+    position: fixed;
+    inset: 0;
+    z-index: 5;
+    background: rgba(245, 102, 0, 0.16);
+    pointer-events: none;
+    transition: opacity 0.6s ease;
+  }
+
+  #gameday-mark {
+    position: fixed;
+    top: 27vh;
+    left: 50%;
+    transform: translateX(-50%);
+    z-index: 66;
+    font-family: system-ui, sans-serif;
+    font-size: clamp(0.75rem, 1.5vw, 1.1rem);
+    font-weight: 700;
+    letter-spacing: 0.42em;
+    text-indent: 0.42em; /* letter-spacing trails the last glyph; re-centre */
+    color: #F56600;
+    text-shadow: 0 1px 12px rgba(0, 0, 0, 0.5);
+    pointer-events: none;
   }
 
   /* Firefox WebExtensions can't focus/select the real address bar on a
@@ -231,7 +287,7 @@
     background: rgba(255, 255, 255, 0.16);
   }
 
-  /* Bookmarks section, populated by JS from bookmarks.csv (see
+  /* Bookmarks section, populated by JS from bookmarks.json (see
      loadBookmarks in the script below), grouped into one column per
      category. Not live-synced with Firefox's real bookmarks - regular
      webpages can't read the bookmarks API, only extension code can - so
@@ -336,6 +392,25 @@
     box-sizing: border-box;
   }
 
+  /* Speedkey badge - Alt+<key> activates the link (see the keydown handler
+     in the script below). margin-left:auto pushes every badge to the card's
+     right edge so they line up in a column regardless of label length.
+     aria-hidden because the shortcut is already announced properly through
+     the link's aria-keyshortcuts attribute; the badge is the visual echo. */
+  .bookmark-key {
+    margin-left: auto;
+    flex-shrink: 0;
+    padding: 1px 6px;
+    font-size: 0.72rem;
+    font-weight: 600;
+    text-transform: uppercase;
+    line-height: 1.5;
+    color: rgba(255, 255, 255, 0.75);
+    background: rgba(255, 255, 255, 0.14);
+    border: 1px solid rgba(255, 255, 255, 0.28);
+    border-radius: 5px;
+  }
+
   #weather-widget {
     position: fixed;
     top: 4vh;
@@ -360,6 +435,393 @@
   #weather-widget.visible {
     opacity: 1;
   }
+
+
+  /* Bookmark editor overlay. z-index 90 - above the settings panel (80)
+     that launches it. Editing needs far more room than the panel has, so
+     this is a centred dialog rather than another group in the list. */
+  #bookmark-editor {
+    position: fixed;
+    inset: 0;
+    z-index: 90;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    background: rgba(10, 6, 24, 0.55);
+    backdrop-filter: blur(3px);
+  }
+
+  #bookmark-editor[hidden] {
+    display: none;
+  }
+
+  #bookmark-editor-card {
+    display: flex;
+    flex-direction: column;
+    width: min(700px, 92vw);
+    max-height: 84vh;
+    padding: 20px 22px;
+    font-family: system-ui, sans-serif;
+    color: #fff;
+    background: rgba(24, 15, 48, 0.95);
+    border: 1px solid rgba(255, 255, 255, 0.3);
+    border-radius: 16px;
+    backdrop-filter: blur(10px);
+  }
+
+  #bookmark-editor-title {
+    margin-bottom: 13px;
+    font-size: 0.7rem;
+    letter-spacing: 0.09em;
+    text-transform: uppercase;
+    color: rgba(255, 255, 255, 0.65);
+  }
+
+  #bookmark-editor-body {
+    flex: 1 1 auto;
+    overflow-y: auto;
+    scrollbar-width: thin;
+    scrollbar-color: rgba(255, 255, 255, 0.28) transparent;
+  }
+
+  .bm-category {
+    margin-bottom: 12px;
+    padding: 11px 12px;
+    background: rgba(255, 255, 255, 0.06);
+    border: 1px solid rgba(255, 255, 255, 0.16);
+    border-radius: 12px;
+  }
+
+  .bm-row {
+    display: flex;
+    align-items: center;
+    gap: 7px;
+    margin-bottom: 7px;
+  }
+
+  .bm-row:last-child {
+    margin-bottom: 0;
+  }
+
+  .bm-row input {
+    min-width: 0;
+    padding: 6px 9px;
+    font-family: system-ui, sans-serif;
+    font-size: 0.85rem;
+    color: #fff;
+    background: rgba(255, 255, 255, 0.1);
+    border: 1px solid rgba(255, 255, 255, 0.25);
+    border-radius: 7px;
+    outline: none;
+  }
+
+  .bm-row input:focus {
+    border-color: #F56600;
+  }
+
+  .bm-row input::placeholder {
+    color: rgba(255, 255, 255, 0.4);
+  }
+
+  .bm-cat-name {
+    flex: 1 1 auto;
+    font-weight: 600;
+  }
+
+  .bm-title {
+    flex: 0 0 28%;
+  }
+
+  .bm-url {
+    flex: 1 1 auto;
+  }
+
+  .bm-key {
+    flex: 0 0 2.4rem;
+    text-align: center;
+    text-transform: uppercase;
+  }
+
+  /* Two links sharing a key would leave one of them permanently
+     unreachable, so the save path blocks on it - flag both offenders
+     instead of failing silently at save time. */
+  .bm-key.dupe,
+  .bm-key.dupe:focus {
+    border-color: #ff6b6b;
+  }
+
+  .bm-btn {
+    flex: 0 0 auto;
+    padding: 6px 10px;
+    font-family: system-ui, sans-serif;
+    font-size: 0.8rem;
+    color: rgba(255, 255, 255, 0.75);
+    background: rgba(255, 255, 255, 0.08);
+    border: 1px solid rgba(255, 255, 255, 0.22);
+    border-radius: 7px;
+    cursor: pointer;
+    transition: background 0.2s ease, color 0.2s ease, border-color 0.2s ease;
+  }
+
+  .bm-btn:hover {
+    background: rgba(255, 255, 255, 0.16);
+    color: #fff;
+  }
+
+  .bm-btn.danger:hover {
+    border-color: #F56600;
+    color: #F56600;
+  }
+
+  .bm-btn.move {
+    padding: 6px 8px;
+    line-height: 1;
+  }
+
+  .bm-btn:disabled {
+    opacity: 0.3;
+    cursor: default;
+  }
+
+  /* Disabled arrows must not light up under the pointer. */
+  .bm-btn:disabled:hover {
+    color: rgba(255, 255, 255, 0.75);
+    background: rgba(255, 255, 255, 0.08);
+    border-color: rgba(255, 255, 255, 0.22);
+  }
+
+  /* Reset confirms in place; this is the armed state. */
+  .bm-btn.armed {
+    color: #F56600;
+    border-color: #F56600;
+  }
+
+  .bm-btn.primary {
+    color: #fff;
+    background: #F56600;
+    border-color: #F56600;
+  }
+
+  .bm-btn.primary:hover {
+    background: #ff7a1f;
+  }
+
+  #bookmark-editor-add-category {
+    align-self: flex-start;
+    margin-top: 2px;
+  }
+
+  #bookmark-editor-actions {
+    display: flex;
+    align-items: center;
+    gap: 9px;
+    margin-top: 14px;
+  }
+
+  #bookmark-editor-status {
+    flex: 1 1 auto;
+    font-size: 0.78rem;
+    color: rgba(255, 255, 255, 0.6);
+  }
+
+  /* Settings gear, bottom-left corner. Bottom-*right* is where the paw
+     mark sits, and a panel opening over it is unreadable however it's
+     styled, so the whole control lives on the left instead.
+     z-index 80 puts it above every mountain layer. .scene has no
+     transform/filter/opacity, so it establishes no stacking context and
+     its children's z-indexes compete directly with everything else on the
+     page (the same reasoning the #bookmarks-section comment relies on).
+     That means clearing the tallest of them, layer1's foreground ridge at
+     70, which spans the full width and would otherwise cover the gear.
+     Deliberately near-invisible at rest so it doesn't compete with the
+     artwork; the glass pill only materializes on hover/focus. */
+  #settings-toggle {
+    position: fixed;
+    bottom: 4vh;
+    left: 2.5vw;
+    z-index: 80;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 38px;
+    height: 38px;
+    padding: 0;
+    color: #fff;
+    background: rgba(255, 255, 255, 0);
+    border: 1px solid rgba(255, 255, 255, 0);
+    border-radius: 999px;
+    cursor: pointer;
+    opacity: 0.35;
+    backdrop-filter: blur(6px);
+    transition: opacity 0.3s ease, background 0.3s ease, border-color 0.3s ease;
+  }
+
+  #settings-toggle:hover,
+  #settings-toggle:focus-visible,
+  #settings-toggle.open {
+    opacity: 1;
+    background: rgba(255, 255, 255, 0.1);
+    border-color: rgba(255, 255, 255, 0.3);
+    outline: none;
+  }
+
+  #settings-toggle svg {
+    width: 19px;
+    height: 19px;
+    display: block;
+    transition: transform 0.5s ease;
+  }
+
+  /* An eighth-turn on hover - half a gear tooth, in the same spirit as
+     the rest of the page's reactive motion. */
+  #settings-toggle:hover svg,
+  #settings-toggle.open svg {
+    transform: rotate(45deg);
+  }
+
+  /* Panel opens upward from the gear, sharing .bookmark-category's 16px
+     radius rather than the 999px pill radius of the search box and weather
+     widget - it's a card, not a control.
+     Over on the left the backdrop is just the foreground ridge - a flat
+     dark silhouette at every time of day - so this keeps the same
+     translucent white glass as the rest of the page rather than needing
+     an opaque scrim to stay legible. */
+  #settings-panel {
+    position: fixed;
+    bottom: calc(4vh + 50px);
+    left: 2.5vw;
+    z-index: 80;
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    align-content: start;
+    gap: 13px 18px;
+    width: min(430px, 92vw);
+    padding: 15px 17px 14px;
+    font-family: system-ui, sans-serif;
+    color: #fff;
+    /* Grow to whatever room is left between the gear and the top of the
+       window rather than a fixed cap, so the whole list fits on a normal
+       window and only scrolls on genuinely short ones. The panel's own
+       bottom offset (4vh + 50px) plus a small margin is what's subtracted. */
+    max-height: calc(96vh - 70px);
+    overflow-y: auto;
+    /* Firefox's default scrollbar is an opaque light slab against this
+       dark panel; thin + translucent keeps it from reading as a seam. */
+    scrollbar-width: thin;
+    scrollbar-color: rgba(255, 255, 255, 0.28) transparent;
+    background: rgba(24, 15, 48, 0.55);
+    border: 1px solid rgba(255, 255, 255, 0.3);
+    border-radius: 16px;
+    backdrop-filter: blur(8px);
+    opacity: 0;
+    transform: translateY(6px);
+    pointer-events: none;
+    transition: opacity 0.25s ease, transform 0.25s ease;
+  }
+
+  #settings-panel.visible {
+    opacity: 1;
+    transform: translateY(0);
+    pointer-events: auto;
+  }
+
+  .settings-input {
+    width: 100%;
+    box-sizing: border-box;
+    margin-top: 7px;
+    padding: 7px 10px;
+    font-family: system-ui, sans-serif;
+    font-size: 0.85rem;
+    color: #fff;
+    background: rgba(255, 255, 255, 0.1);
+    border: 1px solid rgba(255, 255, 255, 0.3);
+    border-radius: 8px;
+    outline: none;
+  }
+
+  .settings-input:focus {
+    border-color: #F56600;
+  }
+
+  .settings-input::placeholder {
+    color: rgba(255, 255, 255, 0.45);
+  }
+
+  .settings-extra.disabled {
+    opacity: 0.4;
+  }
+
+  .settings-status {
+    margin-top: 5px;
+    font-size: 0.73rem;
+    color: rgba(255, 255, 255, 0.6);
+  }
+
+  @media (max-width: 560px) {
+    #settings-panel {
+      grid-template-columns: minmax(0, 1fr);
+    }
+  }
+
+  .settings-group-label {
+    margin-bottom: 9px;
+    font-size: 0.7rem;
+    letter-spacing: 0.09em;
+    text-transform: uppercase;
+    color: rgba(255, 255, 255, 0.65);
+  }
+
+  .settings-option {
+    display: flex;
+    align-items: center;
+    gap: 9px;
+    padding: 5px 6px;
+    border-radius: 8px;
+    font-size: 0.92rem;
+    color: rgba(255, 255, 255, 0.72);
+    cursor: pointer;
+    transition: background 0.2s ease, color 0.2s ease;
+  }
+
+  .settings-option:hover {
+    background: rgba(255, 255, 255, 0.1);
+    color: #fff;
+  }
+
+  /* Real radio inputs, visually hidden rather than display:none, so the
+     group keeps its native keyboard behaviour (arrow keys move between
+     engines). Absolutely positioned against #settings-panel, where they
+     stack invisibly in the corner. */
+  .settings-option input {
+    position: absolute;
+    opacity: 0;
+    pointer-events: none;
+  }
+
+  .settings-dot {
+    width: 11px;
+    height: 11px;
+    flex-shrink: 0;
+    border: 1px solid rgba(255, 255, 255, 0.45);
+    border-radius: 999px;
+    transition: border-color 0.2s ease, box-shadow 0.2s ease;
+  }
+
+  .settings-option:has(input:checked) {
+    color: #fff;
+  }
+
+  .settings-option:has(input:checked) .settings-dot {
+    border-color: #F56600;
+    box-shadow: inset 0 0 0 3px #F56600;
+  }
+
+  /* Keyboard focus still needs to read visibly even though the input
+     itself is hidden. */
+  .settings-option:has(input:focus-visible) {
+    background: rgba(255, 255, 255, 0.14);
+    color: #fff;
+  }
 </style>
 </head>
 <body>
@@ -374,11 +836,40 @@
     <img id="layer1" class="layer" src="resources/Footer_Layer1.png" alt="">
   </div>
 
-  <form id="search-form" action="https://www.google.com/search" autocomplete="off">
-    <input id="search-input" type="text" name="q" placeholder="Search Google" autofocus>
+  <form id="search-form" action="https://duckduckgo.com/" autocomplete="off">
+    <input id="search-input" type="text" name="q" placeholder="Search DuckDuckGo" autofocus>
   </form>
 
   <div id="weather-widget"></div>
+
+
+  <button id="settings-toggle" type="button" aria-label="Settings"
+          aria-expanded="false" aria-controls="settings-panel">
+    <!-- Inline SVG rather than an image file so the gear needs no new
+         asset and picks up currentColor. -->
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"
+         stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+      <circle cx="12" cy="12" r="3.2"></circle>
+      <path d="M19.9 15.5a1.7 1.7 0 0 0 .34 1.87l.06.06a2.06 2.06 0 0 1-2.91 2.91l-.06-.06a1.7 1.7 0 0 0-1.87-.34 1.7 1.7 0 0 0-1.03 1.55v.17a2.06 2.06 0 0 1-4.12 0v-.09a1.7 1.7 0 0 0-1.11-1.55 1.7 1.7 0 0 0-1.87.34l-.06.06a2.06 2.06 0 1 1-2.91-2.91l.06-.06a1.7 1.7 0 0 0 .34-1.87 1.7 1.7 0 0 0-1.55-1.03H2.99a2.06 2.06 0 0 1 0-4.12h.09a1.7 1.7 0 0 0 1.55-1.11 1.7 1.7 0 0 0-.34-1.87l-.06-.06a2.06 2.06 0 1 1 2.91-2.91l.06.06a1.7 1.7 0 0 0 1.87.34h.08a1.7 1.7 0 0 0 1.03-1.55V2.9a2.06 2.06 0 0 1 4.12 0v.09a1.7 1.7 0 0 0 1.03 1.55 1.7 1.7 0 0 0 1.87-.34l.06-.06a2.06 2.06 0 0 1 2.91 2.91l-.06.06a1.7 1.7 0 0 0-.34 1.87v.08a1.7 1.7 0 0 0 1.55 1.03h.17a2.06 2.06 0 0 1 0 4.12h-.09a1.7 1.7 0 0 0-1.55 1.03z"></path>
+    </svg>
+  </button>
+
+  <!-- Contents are generated from SETTINGS_GROUPS in the script below. -->
+  <div id="settings-panel"></div>
+
+  <div id="bookmark-editor" hidden>
+    <div id="bookmark-editor-card" role="dialog" aria-modal="true" aria-labelledby="bookmark-editor-title">
+      <div id="bookmark-editor-title">Bookmarks</div>
+      <div id="bookmark-editor-body"></div>
+      <button type="button" class="bm-btn" id="bookmark-editor-add-category">+ Add category</button>
+      <div id="bookmark-editor-actions">
+        <span id="bookmark-editor-status" role="status"></span>
+        <button type="button" class="bm-btn" id="bookmark-editor-cancel">Cancel</button>
+        <button type="button" class="bm-btn primary" id="bookmark-editor-save">Save</button>
+      </div>
+    </div>
+  </div>
+
 
   <div id="precip-layer"></div>
 
@@ -439,41 +930,13 @@
     // extension.
     document.getElementById('search-input').focus();
 
-    // Bookmarks section: edit bookmarks.csv (category,title,url per line)
+    // Bookmarks section: edit bookmarks.json (categories, each with links)
     // to change what shows up here - it's a plain data file, not synced
     // with Firefox's real bookmarks (a regular webpage can't read those,
     // only extension code can). Icons come from the linked site's own
     // favicon via Google's favicon service, since fetching an arbitrary
     // site's favicon.ico directly runs into inconsistent paths/CORS.
     // Categories render in first-seen order, each as its own column.
-    function parseBookmarksCSV(text) {
-      const lines = text.trim().split(/\r?\n/);
-      return lines.slice(1).filter((line) => line.trim()).map((line) => {
-        const cols = [];
-        let cur = '', inQuotes = false;
-        for (let i = 0; i < line.length; i++) {
-          const c = line[i];
-          if (inQuotes) {
-            if (c === '"' && line[i + 1] === '"') { cur += '"'; i++; }
-            else if (c === '"') { inQuotes = false; }
-            else cur += c;
-          } else if (c === '"') {
-            inQuotes = true;
-          } else if (c === ',') {
-            cols.push(cur); cur = '';
-          } else {
-            cur += c;
-          }
-        }
-        cols.push(cur);
-        return {
-          category: (cols[0] || '').trim(),
-          title: (cols[1] || '').trim(),
-          url: (cols[2] || '').trim(),
-        };
-      });
-    }
-
     // Google's favicon service returns a generic globe icon with a
     // successful HTTP 200 for domains it hasn't crawled a real favicon
     // for - since that's a *successful* image load, the <img> onerror
@@ -487,71 +950,177 @@
       return hostname === suffix || hostname.endsWith(`.${suffix}`);
     }
 
-    function groupBookmarksByCategory(bookmarks) {
-      const groups = new Map();
-      for (const bookmark of bookmarks) {
-        if (!bookmark.url) continue;
-        const key = bookmark.category || 'Other';
-        if (!groups.has(key)) groups.set(key, []);
-        groups.get(key).push(bookmark);
-      }
-      return groups;
+    // Shapes whatever is in the file into a predictable structure. Throws on
+    // a document that isn't usable at all, so loadBookmarks can leave the
+    // existing cards alone rather than replacing them with nothing - CSV
+    // used to fail one line at a time, JSON fails all at once.
+    // A speedkey is a single character matched case-insensitively against
+    // the keyboard event. Anything else in the file - empty, multi-character,
+    // punctuation - is dropped rather than treated as an error: a malformed
+    // key shouldn't cost you the bookmark it belongs to.
+    function normalizeSpeedkey(value) {
+      if (typeof value !== 'string') return '';
+      const ch = value.trim().charAt(0).toLowerCase();
+      return /[a-z0-9]/.test(ch) ? ch : '';
     }
 
-    async function loadBookmarks() {
+    // key -> the <a> it activates. Rebuilt on every render so it can never
+    // outlive the DOM nodes it points at.
+    const speedkeyLinks = new Map();
+
+    function parseBookmarksDoc(doc) {
+      if (!doc || !Array.isArray(doc.categories)) {
+        throw new Error('bookmarks.json has no categories array');
+      }
+      return doc.categories.map((category) => ({
+        name: typeof category.name === 'string' ? category.name : '',
+        links: Array.isArray(category.links)
+          ? category.links
+              .filter((link) => link && typeof link.url === 'string')
+              .map((link) => ({
+                title: typeof link.title === 'string' ? link.title : '',
+                url: link.url,
+                key: normalizeSpeedkey(link.key),
+              }))
+          : [],
+      }));
+    }
+
+    const BOOKMARKS_CACHE_KEY = 'newtab-bookmarks';
+
+    function readBookmarksCache() {
       try {
-        const res = await fetch('bookmarks.csv');
-        const groups = groupBookmarksByCategory(parseBookmarksCSV(await res.text()));
-        const section = document.getElementById('bookmarks-section');
-        section.innerHTML = '';
+        const doc = JSON.parse(localStorage.getItem(BOOKMARKS_CACHE_KEY));
+        // Shaped through the same parser the file goes through, so an
+        // entry written by an older version of this page can't render
+        // something the current code doesn't expect.
+        return doc ? parseBookmarksDoc(doc) : null;
+      } catch (err) {
+        return null;
+      }
+    }
 
-        for (const [category, bookmarks] of groups) {
-          const column = document.createElement('div');
-          column.className = 'bookmark-category';
+    function writeBookmarksCache(categories) {
+      try {
+        localStorage.setItem(BOOKMARKS_CACHE_KEY,
+          JSON.stringify({ version: 1, categories }));
+      } catch (err) {
+        /* caching is an optimisation; never let it break the page */
+      }
+    }
 
-          const heading = document.createElement('h3');
-          heading.className = 'bookmark-category-title';
-          heading.textContent = category;
-          column.appendChild(heading);
+    function renderBookmarks(categories) {
+      const section = document.getElementById('bookmarks-section');
+      section.innerHTML = '';
+      speedkeyLinks.clear();
 
-          for (const { title, url } of bookmarks) {
-            let hostname = '';
-            try { hostname = new URL(url).hostname; } catch { /* skip favicon if url is malformed */ }
+      for (const category of categories) {
+        const column = document.createElement('div');
+        column.className = 'bookmark-category';
 
-            const link = document.createElement('a');
-            link.className = 'bookmark-link';
-            link.href = url;
+        const heading = document.createElement('h3');
+        heading.className = 'bookmark-category-title';
+        heading.textContent = category.name;
+        column.appendChild(heading);
 
-            if (hostname) {
-              const icon = document.createElement('img');
-              icon.className = 'bookmark-icon';
-              icon.alt = '';
+        for (const { title, url, key } of category.links) {
+          let hostname = '';
+          try { hostname = new URL(url).hostname; } catch { /* skip favicon if url is malformed */ }
 
-              if (NO_FAVICON_DOMAIN_SUFFIXES.some((suffix) => hostnameMatchesSuffix(hostname, suffix))) {
-                icon.src = 'resources/paw-orange.png';
-              } else {
-                icon.src = `https://www.google.com/s2/favicons?sz=64&domain=${hostname}`;
+          const link = document.createElement('a');
+          link.className = 'bookmark-link';
+          link.href = url;
+          if (loadSettings().linkTarget === 'new') {
+            link.target = '_blank';
+            // noopener so the opened page can't reach back through
+            // window.opener; noreferrer keeps the referrer off too.
+            link.rel = 'noopener noreferrer';
+          }
+
+          if (hostname) {
+            const icon = document.createElement('img');
+            icon.className = 'bookmark-icon';
+            icon.alt = '';
+
+            if (NO_FAVICON_DOMAIN_SUFFIXES.some((suffix) => hostnameMatchesSuffix(hostname, suffix))) {
+              icon.src = 'resources/paw-orange.png';
+            } else {
+              // Vendored copy first: it comes off loopback in about a
+              // millisecond and paints with the layout. Google's service
+              // costs a 301 plus an image fetch, sends
+              // cache-control: max-age=1800 so the whole set re-expires
+              // every half hour, and is handed this machine's bookmark
+              // list every time it does. It stays on as the fallback so a
+              // bookmark added since the last firefox-newtab-favicons run
+              // still gets a real icon.
+              icon.src = `resources/favicons/${encodeURIComponent(hostname)}.png`;
+              icon.onerror = () => {
                 icon.onerror = () => {
                   icon.onerror = null; // avoid a loop if the fallback itself 404s
                   icon.src = 'resources/paw-orange.png';
                 };
-              }
-              link.appendChild(icon);
+                icon.src = `https://www.google.com/s2/favicons?sz=64&domain=${hostname}`;
+              };
             }
-
-            const label = document.createElement('span');
-            label.textContent = title || hostname || url;
-            link.appendChild(label);
-
-            column.appendChild(link);
+            link.appendChild(icon);
           }
 
-          section.appendChild(column);
+          const label = document.createElement('span');
+          label.textContent = title || hostname || url;
+          link.appendChild(label);
+
+          if (key) {
+            if (speedkeyLinks.has(key)) {
+              // The editor refuses duplicates, but a hand-edited file can
+              // still contain them. First one wins; say so rather than
+              // leaving the later link mysteriously dead.
+              console.warn(`Duplicate speedkey "${key}" ignored for ${url}`);
+            } else {
+              speedkeyLinks.set(key, link);
+              link.setAttribute('aria-keyshortcuts', `Alt+${key.toUpperCase()}`);
+              const badge = document.createElement('span');
+              badge.className = 'bookmark-key';
+              badge.textContent = key;
+              badge.setAttribute('aria-hidden', 'true');
+              link.appendChild(badge);
+            }
+          }
+
+          column.appendChild(link);
         }
 
-        updateBookmarksVisibility();
+        section.appendChild(column);
+      }
+
+      updateBookmarksVisibility();
+    }
+
+    async function loadBookmarks() {
+      // Paint the cached copy first. This runs before the first await, so
+      // the cards are in the DOM in the same task the script executes in
+      // rather than a frame or two later when the fetch resolves.
+      const cached = readBookmarksCache();
+      if (cached) renderBookmarks(cached);
+
+      let categories;
+      try {
+        const res = await fetch('bookmarks.json', { cache: 'no-store' });
+        categories = parseBookmarksDoc(await res.json());
       } catch (err) {
-        console.error('Bookmarks load failed:', err);
+        // Parse before touching the DOM: a malformed file should leave
+        // whatever is already rendered in place, not wipe it - which now
+        // also means a bad file leaves the cached copy on screen.
+        console.error('Bookmarks load failed, keeping what is rendered:', err);
+        return;
+      }
+
+      // Re-render only on an actual change: both sides have been through
+      // parseBookmarksDoc, so their shapes are directly comparable, and
+      // skipping the no-op avoids tearing down and rebuilding identical
+      // DOM (which would also restart every favicon load).
+      if (!cached || JSON.stringify(categories) !== JSON.stringify(cached)) {
+        renderBookmarks(categories);
+        writeBookmarksCache(categories);
       }
     }
 
@@ -579,6 +1148,14 @@
 
     function updateBookmarksVisibility() {
       const section = document.getElementById('bookmarks-section');
+      // The show/hide setting outranks the fit calculation below. It has to
+      // be checked here rather than at the call sites, because this also
+      // runs on every resize (see the listener below) and would otherwise
+      // put the cards straight back.
+      if (loadSettings().showBookmarks === 'off') {
+        section.style.display = 'none';
+        return;
+      }
       if (!section.childElementCount) return; // nothing loaded yet
 
       const searchRect = document.getElementById('search-form').getBoundingClientRect();
@@ -764,7 +1341,14 @@
     // disappears behind cloud cover.
     const INTERLEAVED_CLOUD_Z = [21, 41, 51];
 
-    function spawnClouds(count, { top = [5, 45], width = [14, 26], opacity = [0.35, 0.7], duration = [60, 110], zIndex = [10], allowReverseDrift = true, images = CLOUD_IMAGES } = {}) {
+    // The default opacity range is centred on 0.8 rather than the old
+    // 0.35-0.7. The cloud sprites are an even haze with no fully opaque
+    // core (see firefox-newtab-clouds), so a cloud that rolled a low
+    // opacity dissolved into the sky and read as blurry rather than
+    // distant. The spread is kept so clouds still vary; only the centre
+    // moved. Per-weather overrides below are deliberately not shifted:
+    // fog is meant to be faint, and storm already sits at 0.85-1.
+    function spawnClouds(count, { top = [5, 45], width = [14, 26], opacity = [0.7, 0.9], duration = [60, 110], zIndex = [10], allowReverseDrift = true, images = CLOUD_IMAGES } = {}) {
       // Clouds are appended directly into .scene (not a separate
       // positioned wrapper) so each one's z-index is compared directly
       // against the mountain layers, letting fog clouds interleave.
@@ -822,6 +1406,9 @@
 
     function applyWeatherFX(category) {
       clearWeatherFX();
+      // Off still clears: the toggle has to be able to tear down effects
+      // that are already drifting, not just skip spawning new ones.
+      if (loadSettings().weatherFX === 'off') return;
       switch (category) {
         case 'cloudy': spawnClouds(6, { allowReverseDrift: false }); break;
         case 'fog':    spawnClouds(9, { top: [10, 55], width: [28, 50], opacity: [0.25, 0.45], duration: [220, 340], zIndex: INTERLEAVED_CLOUD_Z }); break;
@@ -837,29 +1424,114 @@
     // the current time plus whatever weather summary was last fetched,
     // rather than being fully set inside updateWeather() alone.
     let weatherSummary = '';
+    // Remembered so a weather-effects toggle can re-apply without another
+    // fetch, and so the temperature-unit toggle knows what to re-request.
+    let lastWeatherCategory = 'clear';
+    let lastCoords = null;
 
     function renderWeatherWidget() {
-      if (!weatherSummary) return; // nothing fetched yet
-      const time = new Date().toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
+      const time = formatClock(new Date());
       const widget = document.getElementById('weather-widget');
-      widget.textContent = `${time} · ${weatherSummary}`;
+      // The clock needs no network at all, but the weather behind it can
+      // take a geolocation round trip (up to the 5s timeout below) plus the
+      // Open-Meteo request. Showing the time straight away and letting the
+      // summary append when it lands beats hiding the whole widget - which
+      // is what an early return on empty weatherSummary used to do.
+      widget.textContent = weatherSummary ? `${time} · ${weatherSummary}` : time;
       widget.classList.add('visible');
     }
 
+    // Open-Meteo is this page's only slow dependency - roughly half a
+    // second - and it used to be re-requested on every single new tab.
+    // Cache the last reading, paint it immediately, and refresh in the
+    // background once it has aged past the TTL.
+    // Kept separate from the weather entry on purpose: this is written
+    // the moment geolocation resolves, so a last known position survives
+    // a weather fetch that failed or a machine that was offline.
+    const LOCATION_CACHE_KEY = 'newtab-location';
+
+    function readLocationCache() {
+      try {
+        const v = JSON.parse(localStorage.getItem(LOCATION_CACHE_KEY));
+        return v && typeof v.lat === 'number' && typeof v.lng === 'number' ? v : null;
+      } catch (err) {
+        return null;
+      }
+    }
+
+    function writeLocationCache(lat, lng) {
+      try {
+        localStorage.setItem(LOCATION_CACHE_KEY, JSON.stringify({ lat, lng }));
+      } catch (err) {
+        /* caching is an optimisation; never let it break the page */
+      }
+    }
+
+    const WEATHER_CACHE_KEY = 'newtab-weather';
+    const WEATHER_TTL_MS = 10 * 60 * 1000;
+
+    function readWeatherCache() {
+      // Same reasoning as loadSettings: storage can throw outright rather
+      // than return null, and a missing cache is never fatal here.
+      try {
+        return JSON.parse(localStorage.getItem(WEATHER_CACHE_KEY));
+      } catch (err) {
+        return null;
+      }
+    }
+
+    function writeWeatherCache(entry) {
+      try {
+        localStorage.setItem(WEATHER_CACHE_KEY, JSON.stringify(entry));
+      } catch (err) {
+        /* caching is an optimisation; never let it break the widget */
+      }
+    }
+
+    function applyWeather(summary, category) {
+      weatherSummary = summary;
+      renderWeatherWidget();
+      lastWeatherCategory = category;
+      document.documentElement.style.setProperty('--weather-tint', WEATHER_TINTS[category]);
+      applyWeatherFX(category);
+    }
+
     async function updateWeather(lat, lng) {
+      // Open-Meteo converts server-side and returns a single unit, so a
+      // unit change means re-requesting rather than converting locally.
+      const celsius = loadSettings().tempUnit === 'celsius';
+      // Coordinates are rounded into the key so metres of GPS jitter
+      // between loads can't miss an otherwise usable cache entry.
+      const cacheKey = `${lat.toFixed(2)},${lng.toFixed(2)},${celsius ? 'c' : 'f'}`;
+      const cached = readWeatherCache();
+      if (cached && cached.key === cacheKey) {
+        // Paint a stale reading rather than nothing: a temperature a few
+        // minutes old beats a widget that stays empty for half a second.
+        applyWeather(cached.summary, cached.category);
+        if (Date.now() - cached.ts < WEATHER_TTL_MS) return;
+      }
       try {
         const url = `https://api.open-meteo.com/v1/forecast?latitude=${lat}&longitude=${lng}` +
-          `&current=temperature_2m,weather_code,is_day&temperature_unit=fahrenheit&timezone=auto`;
+          `&current=temperature_2m,weather_code,is_day` +
+          `&temperature_unit=${celsius ? 'celsius' : 'fahrenheit'}&timezone=auto`;
         const res = await fetch(url);
         const { current } = await res.json();
         const info = WEATHER_CODES[current.weather_code] ||
           { label: 'Unknown', emojiDay: '🌡️', emojiNight: '🌡️', category: 'clear' };
         const emoji = current.is_day ? info.emojiDay : info.emojiNight;
 
-        weatherSummary = `${emoji} ${Math.round(current.temperature_2m)}°F · ${info.label}`;
-        renderWeatherWidget();
-        document.documentElement.style.setProperty('--weather-tint', WEATHER_TINTS[info.category]);
-        applyWeatherFX(info.category);
+        weatherSummary = `${emoji} ${Math.round(current.temperature_2m)}${celsius ? '°C' : '°F'} · ${info.label}`;
+        applyWeather(weatherSummary, info.category);
+        writeWeatherCache({
+          key: cacheKey,
+          // Stored so the next load can seed a position before geolocation
+          // answers - see startLocation.
+          lat,
+          lng,
+          ts: Date.now(),
+          summary: weatherSummary,
+          category: info.category,
+        });
       } catch (err) {
         console.error('Weather fetch failed:', err);
       }
@@ -867,23 +1539,65 @@
 
     setInterval(renderWeatherWidget, 60000);
 
+    let weatherRefreshId = null;
+
     function applyLocation(lat, lng) {
+      lastCoords = { lat, lng };
       const { sunriseHour, sunsetHour } = getSunriseSunsetHours(new Date(), lat, lng);
       SKY_KEYFRAMES = buildSkyKeyframes(sunriseHour, sunsetHour);
       updateSky();
 
       updateWeather(lat, lng);
-      setInterval(() => updateWeather(lat, lng), 30 * 60000); // refresh every 30 min
+      // This can now be called again whenever the location setting changes,
+      // so replace the previous refresh timer rather than stacking another
+      // one on top of it every time.
+      if (weatherRefreshId !== null) clearInterval(weatherRefreshId);
+      weatherRefreshId = setInterval(() => updateWeather(lat, lng), 30 * 60000);
     }
 
-    if (navigator.geolocation) {
-      navigator.geolocation.getCurrentPosition(
-        (pos) => applyLocation(pos.coords.latitude, pos.coords.longitude),
-        () => applyLocation(CLEMSON_SC.lat, CLEMSON_SC.lng),
-        { timeout: 5000 }
-      );
-    } else {
-      applyLocation(CLEMSON_SC.lat, CLEMSON_SC.lng);
+    // Called from the settings block below (not here) because it reads
+    // stored settings, and those constants are declared down there.
+    function startLocation() {
+      const saved = loadSettings();
+      // A saved custom location skips geolocation altogether - no browser
+      // permission prompt, and none of its timeout either.
+      if (saved.location === 'custom' && typeof saved.locationLat === 'number') {
+        applyLocation(saved.locationLat, saved.locationLng);
+        return;
+      }
+      // Paint from the last known position before asking where we are.
+      // getCurrentPosition takes seconds, and updateWeather is reachable
+      // only through applyLocation - so without this the cached reading
+      // can't even be looked up (its key is the coordinates) until
+      // geolocation returns, and the widget shows the clock alone until
+      // then. Geolocation still runs below and corrects sky and weather
+      // if the position actually moved.
+      // The dedicated location entry first; the coordinates embedded in a
+      // weather entry are the fallback, for a cache written before that
+      // key existed.
+      const cachedWeather = readWeatherCache();
+      const lastKnown = readLocationCache() ||
+        (cachedWeather && typeof cachedWeather.lat === 'number' ? cachedWeather : null);
+      const seeded = Boolean(lastKnown);
+      if (seeded) applyLocation(lastKnown.lat, lastKnown.lng);
+
+      if (navigator.geolocation) {
+        navigator.geolocation.getCurrentPosition(
+          (pos) => {
+            // Persist before applying: this is the only moment a genuinely
+            // measured position is known.
+            writeLocationCache(pos.coords.latitude, pos.coords.longitude);
+            applyLocation(pos.coords.latitude, pos.coords.longitude);
+          },
+          // Only fall back to the hardcoded default if nothing was seeded:
+          // a real last-known position beats a constant on the other side
+          // of a failed lookup.
+          () => { if (!seeded) applyLocation(CLEMSON_SC.lat, CLEMSON_SC.lng); },
+          { timeout: 5000 }
+        );
+      } else if (!seeded) {
+        applyLocation(CLEMSON_SC.lat, CLEMSON_SC.lng);
+      }
     }
 
     function hexToRgb(hex) {
@@ -969,6 +1683,817 @@
 
     updateSky();
     setInterval(updateSky, 60000);
+
+    // ---- Settings panel -------------------------------------------------
+    // Preferences behind the gear in the bottom-left corner. Stored as a
+    // single JSON object in localStorage, so adding a setting is just
+    // another key - no storage migration. This only works because the page
+    // is served over http(s): localStorage is per-origin and unavailable
+    // under file:// (the same constraint that already forces bookmarks.json
+    // to be fetched rather than opened from disk).
+    const SETTINGS_KEY = 'newtab-settings';
+
+    function loadSettings() {
+      try {
+        return JSON.parse(localStorage.getItem(SETTINGS_KEY)) || {};
+      } catch (err) {
+        // Corrupt or unreadable storage shouldn't take the page down.
+        return {};
+      }
+    }
+
+    function saveSettings(patch) {
+      const next = Object.assign(loadSettings(), patch);
+      try {
+        localStorage.setItem(SETTINGS_KEY, JSON.stringify(next));
+      } catch (err) {
+        // Quota or private-browsing failure: the choice still applies to
+        // this tab, it just won't survive a reload.
+      }
+      return next;
+    }
+
+    // Every engine below takes its query in a "q" parameter, which is what
+    // #search-input is already named - so switching engines is nothing more
+    // than swapping the form's action URL. An engine using a different
+    // parameter name would need its URL built in a submit handler instead.
+    const SEARCH_ENGINES = [
+      { id: 'duckduckgo', label: 'DuckDuckGo', action: 'https://duckduckgo.com/' },
+      { id: 'google',     label: 'Google',     action: 'https://www.google.com/search' },
+      { id: 'brave',      label: 'Brave',      action: 'https://search.brave.com/search' },
+      { id: 'bing',       label: 'Bing',       action: 'https://www.bing.com/search' },
+      { id: 'startpage',  label: 'Startpage',  action: 'https://www.startpage.com/sp/search' },
+    ];
+
+    function applySearchEngine(id) {
+      const engine = SEARCH_ENGINES.find(e => e.id === id) || SEARCH_ENGINES[0];
+      document.getElementById('search-form').action = engine.action;
+      document.getElementById('search-input').placeholder = `Search ${engine.label}`;
+    }
+
+    // A hoisted declaration that re-reads storage per call, rather than
+    // closing over a `let` - renderWeatherWidget (defined further up) calls
+    // this, and this settings block runs last, so a `let` would sit in the
+    // temporal dead zone if the weather fetch ever resolved first.
+    // hourCycle 'h23' rather than hour12:false: the latter renders midnight
+    // as "24:00" under some locales.
+    function formatClock(date) {
+      const opts = loadSettings().clock === '12h'
+        ? { hour: 'numeric', minute: '2-digit', hour12: true }
+        : { hour: '2-digit', minute: '2-digit', hourCycle: 'h23' };
+      return date.toLocaleTimeString([], opts);
+    }
+
+    // One labelled radio list per entry. Adding a setting means adding an
+    // entry here; the panel markup builds itself from this table. `apply`
+    // receives (value, isInit) - isInit is true during first paint, when
+    // the page is already loading with the stored value and re-triggering
+    // network work would just duplicate it.
+    const SETTINGS_GROUPS = [
+      {
+        key: 'searchEngine',
+        label: 'Search engine',
+        fallback: 'duckduckgo',
+        options: SEARCH_ENGINES.map(e => ({ id: e.id, label: e.label })),
+        apply: (id) => applySearchEngine(id),
+      },
+      {
+        key: 'clock',
+        label: 'Clock',
+        fallback: '24h',
+        options: [
+          { id: '24h', label: '24-hour' },
+          { id: '12h', label: '12-hour' },
+        ],
+        // The widget only repaints itself once a minute, so repaint now to
+        // make the format change visible immediately.
+        apply: () => renderWeatherWidget(),
+      },
+      {
+        key: 'tempUnit',
+        label: 'Temperature',
+        fallback: 'fahrenheit',
+        options: [
+          { id: 'fahrenheit', label: 'Fahrenheit' },
+          { id: 'celsius', label: 'Celsius' },
+        ],
+        // Open-Meteo converts server-side, so changing units means asking
+        // again. On init the pending first fetch already reads the setting.
+        apply: (id, isInit) => {
+          if (!isInit && lastCoords) updateWeather(lastCoords.lat, lastCoords.lng);
+        },
+      },
+      {
+        key: 'weatherFX',
+        label: 'Weather effects',
+        fallback: 'on',
+        options: [
+          { id: 'on', label: 'On' },
+          { id: 'off', label: 'Off' },
+        ],
+        // Re-applying the last known category either tears the effects down
+        // or brings them back, without another fetch.
+        apply: (id, isInit) => {
+          if (!isInit) applyWeatherFX(lastWeatherCategory);
+        },
+      },
+      {
+        key: 'linkTarget',
+        label: 'Bookmark links',
+        fallback: 'same',
+        options: [
+          { id: 'same', label: 'Open in this tab' },
+          { id: 'new', label: 'Open in a new tab' },
+        ],
+        // Rebuild the cards so existing links pick up the new target.
+        apply: (id, isInit) => { if (!isInit) loadBookmarks(); },
+      },
+      {
+        key: 'showBookmarks',
+        label: 'Bookmark cards',
+        fallback: 'on',
+        options: [
+          { id: 'on', label: 'Show' },
+          { id: 'off', label: 'Hide' },
+        ],
+        apply: () => updateBookmarksVisibility(),
+      },
+      {
+        key: 'location',
+        label: 'Location',
+        fallback: 'auto',
+        options: [
+          { id: 'auto', label: 'Automatic' },
+          { id: 'custom', label: 'Custom' },
+        ],
+        extra: buildLocationExtra,
+        apply: (id, isInit) => {
+          syncLocationExtra();
+          if (!isInit) startLocation();
+        },
+      },
+    ];
+
+    // Assigned when the location group's extra control is built; called by
+    // that group's apply() to grey the input out under "Automatic".
+    let syncLocationExtra = () => {};
+
+    // Location needs more than a radio pair - "Custom" has to capture a
+    // place. Names are resolved through Open-Meteo's geocoding API, the
+    // same provider already supplying the forecast, so switching to a
+    // custom location introduces no new third party.
+    function buildLocationExtra() {
+      const wrap = document.createElement('div');
+      wrap.className = 'settings-extra';
+
+      const input = document.createElement('input');
+      input.type = 'text';
+      input.className = 'settings-input';
+      input.placeholder = 'City, e.g. Greenville,SC';
+      input.setAttribute('aria-label', 'Custom location');
+      input.value = loadSettings().locationLabel || '';
+
+      const status = document.createElement('div');
+      status.className = 'settings-status';
+
+      syncLocationExtra = () => {
+        const custom = loadSettings().location === 'custom';
+        input.disabled = !custom;
+        wrap.classList.toggle('disabled', !custom);
+      };
+
+      let lastResolved = input.value;
+
+      async function lookupPlace(name) {
+        const res = await fetch('https://geocoding-api.open-meteo.com/v1/search?count=1&name=' +
+          encodeURIComponent(name));
+        const data = await res.json();
+        return (data.results && data.results[0]) || null;
+      }
+
+      async function resolvePlace() {
+        const name = input.value.trim();
+        // Don't re-query on every blur when nothing was retyped.
+        if (!name || name === lastResolved) return;
+        status.textContent = 'Looking up\u2026';
+        try {
+          let hit = await lookupPlace(name);
+          // The API matches on a comma-joined token: "Greenville,SC"
+          // resolves, but "Greenville SC" misses outright. Retry a
+          // space-separated entry in the comma form before giving up.
+          if (!hit && /\s/.test(name)) hit = await lookupPlace(name.replace(/\s+/g, ','));
+          if (!hit) {
+            status.textContent = 'No match found';
+            return;
+          }
+          const label = [hit.name, hit.admin1, hit.country_code].filter(Boolean).join(', ');
+          saveSettings({
+            locationLat: hit.latitude,
+            locationLng: hit.longitude,
+            locationLabel: label,
+          });
+          input.value = label;
+          lastResolved = label;
+          status.textContent = '';
+          applyLocation(hit.latitude, hit.longitude);
+        } catch (err) {
+          status.textContent = 'Lookup failed';
+        }
+      }
+
+      input.addEventListener('keydown', (event) => {
+        if (event.key === 'Enter') {
+          event.preventDefault();
+          resolvePlace();
+        }
+      });
+      input.addEventListener('blur', resolvePlace);
+
+      wrap.append(input, status);
+      return wrap;
+    }
+
+    const settingsToggle = document.getElementById('settings-toggle');
+    const settingsPanel = document.getElementById('settings-panel');
+
+    for (const group of SETTINGS_GROUPS) {
+      const stored = loadSettings()[group.key];
+      // Ignore a stored value that no longer matches any option (e.g. an
+      // engine that was removed from the table).
+      const active = group.options.some(o => o.id === stored) ? stored : group.fallback;
+
+      const wrap = document.createElement('div');
+      wrap.className = 'settings-group';
+
+      const label = document.createElement('div');
+      label.className = 'settings-group-label';
+      label.id = `settings-label-${group.key}`;
+      label.textContent = group.label;
+
+      const list = document.createElement('div');
+      list.setAttribute('role', 'radiogroup');
+      list.setAttribute('aria-labelledby', label.id);
+
+      for (const option of group.options) {
+        const row = document.createElement('label');
+        row.className = 'settings-option';
+
+        const input = document.createElement('input');
+        input.type = 'radio';
+        input.name = group.key;
+        input.value = option.id;
+        input.checked = option.id === active;
+        input.addEventListener('change', () => {
+          saveSettings({ [group.key]: option.id });
+          group.apply(option.id, false);
+        });
+
+        const dot = document.createElement('span');
+        dot.className = 'settings-dot';
+
+        const text = document.createElement('span');
+        text.textContent = option.label;
+
+        row.append(input, dot, text);
+        list.appendChild(row);
+      }
+
+      wrap.append(label, list);
+      if (group.extra) wrap.appendChild(group.extra());
+      settingsPanel.appendChild(wrap);
+
+      // After the extra control exists, so apply() can reach it.
+      group.apply(active, true);
+    }
+
+    // Kick off sky + weather now that the stored location setting is
+    // readable. Deliberately after the loop so it runs exactly once.
+    startLocation();
+
+
+    // ---- Bookmark editor -------------------------------------------------
+    // Edits bookmarks.json in place rather than keeping a second copy in
+    // browser storage: the page regenerates the file and PUTs it back to
+    // the local server (see the do_PUT guards in firefox-newtab-serve), so
+    // the CSV stays the single source of truth and is still hand-editable,
+    // greppable and committable.
+    const editorEl = document.getElementById('bookmark-editor');
+    const editorBody = document.getElementById('bookmark-editor-body');
+    const editorStatus = document.getElementById('bookmark-editor-status');
+    let editorModel = [];
+
+    // Focus target to restore after renderEditor() rebuilds the DOM, set by
+    // the move handlers so the arrow you just clicked stays under the
+    // keyboard focus as its row travels.
+    let editorPendingFocus = null;
+
+    function moveWithin(arr, from, to) {
+      if (to < 0 || to >= arr.length) return false;
+      arr.splice(to, 0, arr.splice(from, 1)[0]);
+      return true;
+    }
+
+    function makeMoveButton(glyph, label, disabled, focusKey, onClick) {
+      const btn = document.createElement('button');
+      btn.type = 'button';
+      btn.className = 'bm-btn move';
+      btn.textContent = glyph;
+      btn.setAttribute('aria-label', label);
+      btn.disabled = disabled;
+      btn.dataset.fk = focusKey;
+      btn.addEventListener('click', onClick);
+      return btn;
+    }
+
+    // Returns the number of fields caught in a collision, so the save path
+    // can use it as a guard as well as a highlighter.
+    function markDuplicateKeys() {
+      const inputs = Array.from(editorBody.querySelectorAll('.bm-key'));
+      const counts = new Map();
+      for (const input of inputs) {
+        if (input.value) counts.set(input.value, (counts.get(input.value) || 0) + 1);
+      }
+      let clashing = 0;
+      for (const input of inputs) {
+        const bad = Boolean(input.value) && counts.get(input.value) > 1;
+        input.classList.toggle('dupe', bad);
+        if (bad) clashing++;
+      }
+      return clashing;
+    }
+
+    function renderEditor() {
+      editorBody.innerHTML = '';
+
+      editorModel.forEach((group, gi) => {
+        const box = document.createElement('div');
+        box.className = 'bm-category';
+
+        const head = document.createElement('div');
+        head.className = 'bm-row';
+
+        const name = document.createElement('input');
+        name.className = 'bm-cat-name';
+        name.value = group.name;
+        name.placeholder = 'Category name';
+        name.setAttribute('aria-label', 'Category name');
+        name.addEventListener('input', () => { group.name = name.value; });
+
+        const catUp = makeMoveButton('\u2191', 'Move category up', gi === 0, `cat:${gi}:up`, () => {
+          if (moveWithin(editorModel, gi, gi - 1)) {
+            editorPendingFocus = `cat:${gi - 1}:up`;
+            renderEditor();
+          }
+        });
+        const catDown = makeMoveButton('\u2193', 'Move category down',
+          gi === editorModel.length - 1, `cat:${gi}:down`, () => {
+            if (moveWithin(editorModel, gi, gi + 1)) {
+              editorPendingFocus = `cat:${gi + 1}:down`;
+              renderEditor();
+            }
+          });
+
+        const dropCat = document.createElement('button');
+        dropCat.type = 'button';
+        dropCat.className = 'bm-btn danger';
+        dropCat.textContent = 'Remove';
+        dropCat.addEventListener('click', () => {
+          editorModel.splice(gi, 1);
+          renderEditor();
+        });
+
+        head.append(name, catUp, catDown, dropCat);
+        box.appendChild(head);
+
+        group.links.forEach((link, li) => {
+          const row = document.createElement('div');
+          row.className = 'bm-row';
+
+          const title = document.createElement('input');
+          title.className = 'bm-title';
+          title.value = link.title;
+          title.placeholder = 'Title';
+          title.setAttribute('aria-label', 'Link title');
+          title.addEventListener('input', () => { link.title = title.value; });
+
+          const url = document.createElement('input');
+          url.className = 'bm-url';
+          url.value = link.url;
+          url.placeholder = 'https://…';
+          url.setAttribute('aria-label', 'Link URL');
+          url.addEventListener('input', () => { link.url = url.value; });
+
+          const keyInput = document.createElement('input');
+          keyInput.className = 'bm-key';
+          keyInput.value = link.key || '';
+          keyInput.maxLength = 1;
+          keyInput.placeholder = 'k';
+          keyInput.setAttribute('aria-label', 'Speedkey');
+          keyInput.title = 'One letter or digit - opens this link with Alt+key';
+          keyInput.addEventListener('input', () => {
+            // Normalize on the way in so the field can only ever hold a
+            // character the keydown handler will actually match.
+            link.key = normalizeSpeedkey(keyInput.value);
+            keyInput.value = link.key;
+            markDuplicateKeys();
+          });
+
+          const up = makeMoveButton('\u2191', 'Move link up', li === 0, `lnk:${gi}:${li}:up`, () => {
+            if (moveWithin(group.links, li, li - 1)) {
+              editorPendingFocus = `lnk:${gi}:${li - 1}:up`;
+              renderEditor();
+            }
+          });
+          const down = makeMoveButton('\u2193', 'Move link down',
+            li === group.links.length - 1, `lnk:${gi}:${li}:down`, () => {
+              if (moveWithin(group.links, li, li + 1)) {
+                editorPendingFocus = `lnk:${gi}:${li + 1}:down`;
+                renderEditor();
+              }
+            });
+
+          const drop = document.createElement('button');
+          drop.type = 'button';
+          drop.className = 'bm-btn danger';
+          drop.textContent = '\u2715';
+          drop.setAttribute('aria-label', 'Remove link');
+          drop.addEventListener('click', () => {
+            group.links.splice(li, 1);
+            renderEditor();
+          });
+
+          row.append(title, url, keyInput, up, down, drop);
+          box.appendChild(row);
+        });
+
+        const addLink = document.createElement('button');
+        addLink.type = 'button';
+        addLink.className = 'bm-btn';
+        addLink.textContent = '+ Add link';
+        addLink.addEventListener('click', () => {
+          group.links.push({ title: '', url: '', key: '' });
+          renderEditor();
+          // renderEditor() rebuilt the DOM, so re-find this group's card
+          // and focus the title field of the row just added.
+          const card = editorBody.querySelectorAll('.bm-category')[gi];
+          if (card) {
+            const titles = card.querySelectorAll('.bm-title');
+            if (titles.length) titles[titles.length - 1].focus();
+          }
+        });
+        box.appendChild(addLink);
+
+        editorBody.appendChild(box);
+      });
+
+      if (editorPendingFocus) {
+        const target = editorBody.querySelector(`[data-fk="${editorPendingFocus}"]`);
+        editorPendingFocus = null;
+        if (target && !target.disabled) {
+          target.focus();
+        } else if (target) {
+          // The row reached an end and that arrow is now disabled; fall back
+          // to the opposite one so focus doesn't drop to the document.
+          const alt = target.parentElement.querySelector('.bm-btn.move:not(:disabled)');
+          if (alt) alt.focus();
+        }
+      }
+
+      markDuplicateKeys();
+    }
+
+    async function openBookmarkEditor() {
+      editorStatus.textContent = '';
+      editorModel = [];
+      try {
+        // cache:no-store so a save made in another tab isn't masked by a
+        // stale copy of the file.
+        const res = await fetch('bookmarks.json', { cache: 'no-store' });
+        // The file's shape is the editor's shape, so this is a straight
+        // load - no regrouping on the way in, no flattening on the way out.
+        editorModel = parseBookmarksDoc(await res.json());
+      } catch (err) {
+        editorStatus.textContent = 'Could not read bookmarks.json';
+      }
+      renderEditor();
+      editorEl.hidden = false;
+      const first = editorBody.querySelector('input');
+      if (first) first.focus();
+    }
+
+    function closeBookmarkEditor() {
+      editorEl.hidden = true;
+      document.getElementById('search-input').focus();
+    }
+
+    async function saveBookmarkEditor() {
+      if (markDuplicateKeys()) {
+        editorStatus.textContent = 'Two links share a speedkey - each must be unique';
+        return;
+      }
+      editorStatus.textContent = 'Saving…';
+      // Drop rows left blank and categories left unnamed - they'd otherwise
+      // render as empty cards.
+      const categories = editorModel
+        .map((group) => ({
+          name: group.name.trim(),
+          links: group.links
+            .map((link) => {
+              // Omit the key entirely when unset rather than writing an
+              // empty string - keeps the file clean for hand-editing.
+              const row = { title: link.title.trim(), url: link.url.trim() };
+              const key = normalizeSpeedkey(link.key || '');
+              if (key) row.key = key;
+              return row;
+            })
+            .filter((link) => link.title || link.url),
+        }))
+        .filter((group) => group.name);
+      try {
+        const res = await fetch('bookmarks.json', {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ version: 1, categories }, null, 2) + '\n',
+        });
+        if (!res.ok) throw new Error(`server returned ${res.status}`);
+        await loadBookmarks();
+        closeBookmarkEditor();
+      } catch (err) {
+        // Most likely the server predates the PUT handler or rejected the
+        // origin. Either way bookmarks.json on disk is untouched, so the
+        // dialog stays open with the edits intact.
+        editorStatus.textContent = `Save failed: ${err.message}`;
+      }
+    }
+
+    document.getElementById('bookmark-editor-add-category').addEventListener('click', () => {
+      editorModel.push({ name: '', links: [{ title: '', url: '', key: '' }] });
+      renderEditor();
+      const names = editorBody.querySelectorAll('.bm-cat-name');
+      if (names.length) names[names.length - 1].focus();
+    });
+    document.getElementById('bookmark-editor-cancel').addEventListener('click', closeBookmarkEditor);
+    document.getElementById('bookmark-editor-save').addEventListener('click', saveBookmarkEditor);
+
+    // Backdrop click closes; clicks on the card itself must not.
+    editorEl.addEventListener('click', (event) => {
+      if (event.target === editorEl) closeBookmarkEditor();
+    });
+
+    document.addEventListener('keydown', (event) => {
+      if (event.key === 'Escape' && !editorEl.hidden) closeBookmarkEditor();
+    });
+
+    // Bookmarks get a launcher rather than a radio group - see above.
+    const bmGroup = document.createElement('div');
+    bmGroup.className = 'settings-group';
+    const bmLabel = document.createElement('div');
+    bmLabel.className = 'settings-group-label';
+    bmLabel.textContent = 'Bookmarks';
+    const bmButton = document.createElement('button');
+    bmButton.type = 'button';
+    bmButton.className = 'bm-btn';
+    bmButton.textContent = 'Edit links…';
+    bmButton.addEventListener('click', () => {
+      setSettingsOpen(false);
+      openBookmarkEditor();
+    });
+    bmGroup.append(bmLabel, bmButton);
+    settingsPanel.appendChild(bmGroup);
+
+    // Reset sits last and confirms in place rather than through a modal -
+    // one stray click shouldn't wipe every setting, but a blocking
+    // confirm() dialog would be heavier than this warrants.
+    const resetGroup = document.createElement('div');
+    resetGroup.className = 'settings-group';
+    const resetLabel = document.createElement('div');
+    resetLabel.className = 'settings-group-label';
+    resetLabel.textContent = 'Reset';
+    const resetButton = document.createElement('button');
+    resetButton.type = 'button';
+    resetButton.className = 'bm-btn';
+    resetButton.textContent = 'Reset settings';
+    const resetNote = document.createElement('div');
+    resetNote.className = 'settings-status';
+    resetNote.textContent = 'Bookmarks are not affected.';
+
+    let resetArmTimer = null;
+
+    function disarmReset() {
+      resetArmTimer = null;
+      resetButton.textContent = 'Reset settings';
+      resetButton.classList.remove('armed');
+    }
+
+    resetButton.addEventListener('click', () => {
+      if (resetArmTimer !== null) {
+        clearTimeout(resetArmTimer);
+        try {
+          localStorage.removeItem(SETTINGS_KEY);
+        } catch (err) {
+          // Nothing stored, or storage unavailable - reloading still
+          // restores defaults for this tab.
+        }
+        // Reload rather than re-applying each group by hand: it re-runs the
+        // whole init path, so nothing can be left half-reverted.
+        location.reload();
+        return;
+      }
+      resetButton.textContent = 'Click again to confirm';
+      resetButton.classList.add('armed');
+      resetArmTimer = setTimeout(disarmReset, 4000);
+    });
+
+    resetGroup.append(resetLabel, resetButton, resetNote);
+    settingsPanel.appendChild(resetGroup);
+
+    function settingsOpen() {
+      return settingsPanel.classList.contains('visible');
+    }
+
+    function setSettingsOpen(open) {
+      settingsPanel.classList.toggle('visible', open);
+      settingsToggle.classList.toggle('open', open);
+      settingsToggle.setAttribute('aria-expanded', String(open));
+      if (open) {
+        // Focus the first checked option so arrow keys work straight away.
+        const checked = settingsPanel.querySelector('input:checked');
+        if (checked) checked.focus();
+      } else {
+        // Hand focus back to the search box rather than to the gear: a
+        // focused search box is this page's resting state (see the
+        // autofocus note above), so closing settings should restore it.
+        document.getElementById('search-input').focus();
+      }
+    }
+
+    settingsToggle.addEventListener('click', (event) => {
+      event.stopPropagation();
+      setSettingsOpen(!settingsOpen());
+    });
+
+    // Clicks landing inside the panel shouldn't count as "clicked away".
+    settingsPanel.addEventListener('click', (event) => event.stopPropagation());
+
+    document.addEventListener('click', () => {
+      if (settingsOpen()) setSettingsOpen(false);
+    });
+
+    document.addEventListener('keydown', (event) => {
+      if (event.key === 'Escape' && settingsOpen()) setSettingsOpen(false);
+    });
+
+    // event.key carries the plain character for Alt chords on Linux, but the
+    // length guard matters: pressing Alt by itself reports key === 'Alt',
+    // whose first character would otherwise register as a stray 'a'.
+    // event.code is the fallback for layouts where Alt does rewrite the key.
+    function speedkeyFromEvent(event) {
+      if (typeof event.key === 'string' && event.key.length === 1) {
+        const ch = event.key.toLowerCase();
+        if (/[a-z0-9]/.test(ch)) return ch;
+      }
+      const m = /^(?:Key([A-Z])|Digit([0-9]))$/.exec(event.code || '');
+      return m ? (m[1] || m[2]).toLowerCase() : '';
+    }
+
+    // Alt+<key> jumps straight to a bookmark. Alt rather than a bare letter
+    // because #search-input holds focus by design (see the autofocus note
+    // near the top of this script), so unmodified keys have to keep flowing
+    // into the search box. Clicking the anchor rather than assigning
+    // location reuses whatever target/rel loadBookmarks already set from the
+    // linkTarget setting, instead of duplicating that decision here.
+    document.addEventListener('keydown', (event) => {
+      if (!event.altKey || event.ctrlKey || event.metaKey || event.repeat) return;
+      // Navigating away mid-edit would silently discard unsaved edits.
+      if (!editorEl.hidden) return;
+      const link = speedkeyLinks.get(speedkeyFromEvent(event));
+      if (!link) return;
+      event.preventDefault();
+      link.click();
+    });
+    // ---------------------------------------------------------------
+    // Easter eggs. Mostly triggers for machinery that already existed:
+    // startTimeDemo/applyWeatherFX were written as console-only dev tools
+    // (see README) and are just given a way in from the keyboard here.
+    // ---------------------------------------------------------------
+
+    // Paw prints tracking diagonally across the scene, back-left to
+    // front-right, staggered so they read as footsteps rather than a
+    // single burst. Each removes itself when its animation ends.
+    function pawBurst(count = 14) {
+      const scene = document.querySelector('.scene');
+      for (let i = 0; i < count; i += 1) {
+        const t = count > 1 ? i / (count - 1) : 0;
+        const print = document.createElement('img');
+        print.className = 'paw-print';
+        print.src = 'resources/paw-orange.png';
+        print.alt = '';
+        print.style.left = `${6 + t * 82 + (Math.random() * 5 - 2.5)}vw`;
+        print.style.top = `${72 - t * 30 + (Math.random() * 7 - 3.5)}vh`;
+        print.style.setProperty('--paw-rot', `${-26 + t * 52 + (Math.random() * 18 - 9)}deg`);
+        print.style.animationDelay = `${(t * 1.15).toFixed(2)}s`;
+        print.addEventListener('animationend', () => print.remove());
+        scene.appendChild(print);
+      }
+    }
+
+    let orangeWashTimer = null;
+
+    function flashOrange(ms = 4500) {
+      document.body.classList.add('orange-wash');
+      clearTimeout(orangeWashTimer);
+      orangeWashTimer = setTimeout(() => {
+        // Game day holds the wash for the whole session; a temporary
+        // flash must not clear it out from under that.
+        if (!document.body.classList.contains('gameday')) {
+          document.body.classList.remove('orange-wash');
+        }
+      }, ms);
+    }
+
+    // Five clicks on the corner paw. The window resets 1.5s after the
+    // last click so ordinary stray clicks never accumulate into it.
+    (() => {
+      const paw = document.getElementById('paw');
+      let clicks = 0;
+      let resetId = null;
+      paw.addEventListener('click', () => {
+        clicks += 1;
+        clearTimeout(resetId);
+        resetId = setTimeout(() => { clicks = 0; }, 1500);
+        if (clicks >= 5) {
+          clicks = 0;
+          pawBurst(16);
+        }
+      });
+    })();
+
+    // Konami code -> one full sunrise-to-midnight cycle in 20 seconds.
+    // loop:false means startTimeDemo stops itself at the end and hands
+    // the sky back to the real clock.
+    const KONAMI = ['ArrowUp', 'ArrowUp', 'ArrowDown', 'ArrowDown',
+                    'ArrowLeft', 'ArrowRight', 'ArrowLeft', 'ArrowRight', 'b', 'a'];
+    let konamiAt = 0;
+
+    document.addEventListener('keydown', (event) => {
+      const got = event.key.length === 1 ? event.key.toLowerCase() : event.key;
+      if (got === KONAMI[konamiAt]) {
+        konamiAt += 1;
+      } else {
+        // A mismatch can still be a fresh start on the first key.
+        konamiAt = got === KONAMI[0] ? 1 : 0;
+      }
+      if (konamiAt < KONAMI.length) return;
+      konamiAt = 0;
+      // The b and a landed in the search box on the way past.
+      document.getElementById('search-input').value = '';
+      startTimeDemo({ cycleDurationSeconds: 20, loop: false });
+    });
+
+    // Escape bails out of the time-lapse early.
+    document.addEventListener('keydown', (event) => {
+      if (event.key === 'Escape' && demoIntervalId !== null) stopTimeDemo();
+    });
+
+    // Phrases that do something instead of searching. Anything not listed
+    // here submits to the search engine exactly as before.
+    // Deliberately only phrases nobody would type into a search box on
+    // purpose. Bare weather words like "snow" or "rain" were here and
+    // were removed: they're plausible real searches, and silently
+    // swallowing one is worse than the egg is fun.
+    const SEARCH_SPELLS = {
+      'go tigers':    () => pawBurst(18),
+      'solid orange': () => flashOrange(),
+      'death valley': () => applyWeatherFX('storm'),
+    };
+
+    document.getElementById('search-form').addEventListener('submit', (event) => {
+      const input = document.getElementById('search-input');
+      const spell = SEARCH_SPELLS[input.value.trim().toLowerCase()];
+      if (!spell) return; // fall through to a real search
+      event.preventDefault();
+      input.value = '';
+      spell();
+    });
+
+    // Autumn Saturdays. Unlike the others this one isn't hidden - it is
+    // meant to find you. Call applyGameDay() from the console to preview
+    // it on any other day.
+    function isGameDay(now = new Date()) {
+      const month = now.getMonth(); // 0-based: 7=Aug, 10=Nov
+      return now.getDay() === 6 && month >= 7 && month <= 10;
+    }
+
+    function applyGameDay() {
+      if (document.getElementById('gameday-mark')) return; // already on
+      document.body.classList.add('gameday', 'orange-wash');
+      const mark = document.createElement('div');
+      mark.id = 'gameday-mark';
+      mark.textContent = 'GO TIGERS';
+      document.querySelector('.scene').appendChild(mark);
+    }
+
+    if (isGameDay()) applyGameDay();
   </script>
 </body>
 </html>
