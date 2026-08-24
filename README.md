@@ -186,3 +186,31 @@ A few starting points:
 - On very short windows, bookmark cards intentionally sink behind the front
   mountain layer as a visual effect — content covered that way is not
   reachable by scrolling. This is a deliberate tradeoff, not a bug.
+
+## License
+
+Copyright (C) 2026 Alex Adkins
+
+This program is free software: you can redistribute it and/or modify it under
+the terms of the GNU General Public License as published by the Free Software
+Foundation, either version 3 of the License, or (at your option) any later
+version.
+
+This program is distributed in the hope that it will be useful, but WITHOUT ANY
+WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS FOR A
+PARTICULAR PURPOSE. See the GNU General Public License for more details.
+
+You should have received a copy of the GNU General Public License along with
+this program. If not, see <https://www.gnu.org/licenses/>.
+
+### Trademarks and brand assets
+
+The license above covers the code in this repository. It does **not** grant any
+rights to Clemson University's trademarks or brand assets, which are not the
+author's to license:
+
+- `resources/ClemsonUniversity_RGB__Orange.png` — Clemson University wordmark
+- `resources/Paw_RGB__Orange.png`, `resources/paw-orange.png` — Clemson tiger paw
+
+These remain the property of Clemson University. Anyone redistributing a
+modified version of this project should substitute their own artwork.
