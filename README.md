@@ -95,17 +95,112 @@ The recommended host for a personal machine is the vendored
 this page — keep-alive, version-stamped immutable assets (a warm new tab
 transfers a few KB instead of re-downloading everything), and the guarded
 PUT endpoint the bookmark editor saves through. Run it from a systemd user
-unit for something permanent. There's also an opt-in offline fallback:
-`localStorage.setItem('newtab-offline-fallback', 'on')` in the page's
-console registers `sw.js`, which keeps the new tab rendering from cache if
-the server is ever down (off by default because the service-worker hop
-costs a few milliseconds per tab).
+unit (Linux) or a launchd agent (macOS) for something permanent — see
+[Making it permanent](#making-it-permanent) below. There's also an opt-in
+offline fallback: `localStorage.setItem('newtab-offline-fallback', 'on')`
+in the page's console registers `sw.js`, which keeps the new tab rendering
+from cache if the server is ever down (off by default because the
+service-worker hop costs a few milliseconds per tab).
 
 For a quick look without any of that:
 
 ```bash
 python3 -m http.server 8000
 # then visit http://localhost:8000/index.html
+```
+
+#### Making it permanent
+
+By default, `scripts/firefox-newtab-serve` serves
+`~/.local/share/firefox-newtab`, not the repo itself. Point it at your
+clone once, and every method below (and every manual run) picks it up
+automatically without needing `FIREFOX_NEWTAB_ROOT` set each time:
+
+```bash
+mkdir -p ~/.local/share
+ln -s /path/to/your/clone ~/.local/share/firefox-newtab
+```
+
+**macOS (launchd):** create
+`~/Library/LaunchAgents/com.<you>.firefox-newtab-serve.plist`:
+
+```xml
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.<you>.firefox-newtab-serve</string>
+
+    <key>ProgramArguments</key>
+    <array>
+        <string>/path/to/python3</string>
+        <string>/path/to/your/clone/scripts/firefox-newtab-serve</string>
+    </array>
+
+    <key>WorkingDirectory</key>
+    <string>/path/to/your/clone</string>
+
+    <key>RunAtLoad</key>
+    <true/>
+    <key>KeepAlive</key>
+    <true/>
+
+    <key>StandardOutPath</key>
+    <string>/path/to/home/Library/Logs/firefox-newtab-serve.log</string>
+    <key>StandardErrorPath</key>
+    <string>/path/to/home/Library/Logs/firefox-newtab-serve.err.log</string>
+</dict>
+</plist>
+```
+
+`ProgramArguments` needs an absolute path to `python3` — launchd doesn't
+read your shell's `PATH`/`.zshrc`, so `which python3` first and use that
+exact path (e.g. `/usr/bin/python3`, or wherever Homebrew/python.org put
+yours).
+
+Then load it (`id -u` gives the number `gui/` wants):
+
+```bash
+launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.<you>.firefox-newtab-serve.plist
+```
+
+It now starts at every login and restarts itself if it ever dies — no
+terminal needs to stay open. A few other commands worth knowing:
+
+```bash
+# stop it until next login/reboot
+launchctl kill TERM gui/$(id -u)/com.<you>.firefox-newtab-serve
+
+# fully unload it (also needed before reloading after editing the plist)
+launchctl bootout gui/$(id -u)/com.<you>.firefox-newtab-serve
+
+# remove permanently
+launchctl bootout gui/$(id -u)/com.<you>.firefox-newtab-serve
+rm ~/Library/LaunchAgents/com.<you>.firefox-newtab-serve.plist
+```
+
+Logs land at the `StandardOutPath`/`StandardErrorPath` you set in the
+plist — check there first if a new tab isn't loading.
+
+**Linux (systemd user unit):** create
+`~/.config/systemd/user/firefox-newtab-serve.service`:
+
+```ini
+[Unit]
+Description=Firefox new-tab loopback server
+
+[Service]
+ExecStart=/usr/bin/python3 /path/to/your/clone/scripts/firefox-newtab-serve
+Restart=on-failure
+
+[Install]
+WantedBy=default.target
+```
+
+```bash
+systemctl --user daemon-reload
+systemctl --user enable --now firefox-newtab-serve
 ```
 
 ### 2. Edit your bookmarks
@@ -355,7 +450,7 @@ so nothing stale can ever be cached. A few starting points:
 
 ## License
 
-Copyright (C) 2026 Alex Adkins
+Copyright (C) 2026 Alex Adkins, Tim Ransom
 
 This program is free software: you can redistribute it and/or modify it under
 the terms of the GNU General Public License as published by the Free Software
