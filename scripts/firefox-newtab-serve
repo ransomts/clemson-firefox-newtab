@@ -33,31 +33,79 @@ ALLOWED_ORIGINS = {
 
 
 class QuietHandler(SimpleHTTPRequestHandler):
+    # HTTP/1.1 for keep-alive: a new tab issues ~20 requests, and under
+    # the base class's default HTTP/1.0 every one paid a fresh TCP
+    # handshake. Safe here because the base class sends Content-Length on
+    # every file response and 304, and the 204 from do_PUT has no body by
+    # definition.
+    protocol_version = "HTTP/1.1"
+
+    # Keep-alive without TCP_NODELAY reintroduced the Nagle/delayed-ACK
+    # stall: headers and body go out as two small writes, and on a reused
+    # connection the second one sat ~40ms waiting for an ACK (measured on
+    # bookmarks.json, 41ms for a 2.7KB file). HTTP/1.0 masked it because
+    # closing the connection flushed everything.
+    disable_nagle_algorithm = True
+
     def log_message(self, fmt, *args):
         pass
 
-    # Documents that change whenever the page is edited. With no
-    # Cache-Control at all the browser falls back to heuristic freshness
-    # and can pair a fresh bookmarks.json (the page fetches that with
-    # cache:no-store) against a stale index.html - new data rendered by
-    # old code, which reads as a bug in the page rather than a cache hit.
-    NEVER_STORE = ("/", "/index.html", "/bookmarks.json")
+    # Three freshness tiers, shaped by a measured Firefox behavior: on
+    # loopback, "no-cache" (revalidate) degenerates into a full
+    # re-download - Firefox races its disk cache against the network and
+    # the loopback network wins, so it never sends If-Modified-Since at
+    # all (profiled 2026-08-27: app.js and style.css came back 200 with
+    # full bodies on every warm tab). So revalidation buys nothing here.
+    # Instead: index.html is the one mutable entry point (no-cache, 3KB,
+    # re-fetched per tab) and do_GET stamps ?v=<mtime> onto the style.css
+    # and app.js references as it serves it. The stamped assets are
+    # immutable: cached forever under that URL, zero requests on a warm
+    # tab, and a stable cache entry Firefox's JS bytecode cache can
+    # attach to. Any edit changes the stamp, which makes the 2026-08-21
+    # stale-editor-code hazard structurally impossible rather than
+    # merely revalidated away. bookmarks.json stays no-store: the page
+    # always fetches it with cache:'no-store' anyway, and hand edits to
+    # the file should never race a cached copy.
+    NEVER_STORE = ("/bookmarks.json",)
+    ENTRY_POINTS = ("/", "/index.html", "/sw.js")
+    STAMPED = ("/style.css", "/app.js")
 
     def end_headers(self):
         path = self.path.split("?", 1)[0]
         if path in self.NEVER_STORE:
             self.send_header("Cache-Control", "no-store, must-revalidate")
-        else:
-            # Everything else is artwork: ~385KB on the wire but ~20MB of
-            # decoded bitmap, and it changes only when the sprites or
-            # favicons are regenerated. "no-cache" does not mean "do not
-            # cache" - it means "revalidate before reusing". The browser
-            # sends If-Modified-Since, this server answers 304 in about a
-            # millisecond, and the already-decoded image is reused. That
-            # keeps regenerated assets appearing immediately while not
-            # paying to re-download and re-decode them on every new tab.
+        elif path in self.ENTRY_POINTS:
             self.send_header("Cache-Control", "no-cache")
+        elif path in self.STAMPED:
+            self.send_header("Cache-Control", "max-age=31536000, immutable")
+        else:
+            # Artwork: ~385KB on the wire but ~20MB of decoded bitmap,
+            # regenerated rarely (sprite/favicon script runs). An hour of
+            # max-age means a warm tab makes zero requests for it; the
+            # cost is regenerated artwork taking up to an hour to appear
+            # unless you hard-reload once.
+            self.send_header("Cache-Control", "max-age=3600")
         super().end_headers()
+
+    def do_GET(self):
+        if self.path.split("?", 1)[0] in ("/", "/index.html"):
+            try:
+                with open(os.path.join(ROOT, "index.html"), "rb") as fh:
+                    body = fh.read()
+                for ref in ("style.css", "app.js"):
+                    v = int(os.stat(os.path.join(ROOT, ref)).st_mtime)
+                    body = body.replace(
+                        ref.encode(), b"%s?v=%d" % (ref.encode(), v), 1)
+            except OSError:
+                self.send_error(404, "index.html unreadable")
+                return
+            self.send_response(200)
+            self.send_header("Content-Type", "text/html; charset=utf-8")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+            return
+        super().do_GET()
 
     def log_error(self, fmt, *args):
         sys.stderr.write("%s - %s\n" % (self.address_string(), fmt % args))
@@ -73,7 +121,13 @@ class QuietHandler(SimpleHTTPRequestHandler):
         if self.client_address[0] not in ("127.0.0.1", "::1"):
             self.send_error(403, "loopback only")
             return
-        if self.headers.get("Origin") not in ALLOWED_ORIGINS:
+        # The WebExtension build of the page saves from a moz-extension://
+        # origin whose UUID is random per install, so match the scheme.
+        # Any extension granted host access to this port could write here,
+        # but such an extension could already talk to every loopback
+        # service; the guard's job is keeping ordinary web pages out.
+        origin = self.headers.get("Origin", "")
+        if origin not in ALLOWED_ORIGINS and not origin.startswith("moz-extension://"):
             self.send_error(403, "bad origin")
             return
 
