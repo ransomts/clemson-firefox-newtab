@@ -1,0 +1,100 @@
+#!/usr/bin/env python3
+"""Profile the new-tab page in headless Firefox.
+
+Opens a fresh profile, loads the page once (cold), then N more times each
+in a new tab (warm - the state every real new tab runs in), and records
+navigation/paint/resource timings per load. Results go to a JSON file so
+a before-run and an after-run can be diffed.
+
+Usage: profile_newtab.py <label> [warm_loads]
+"""
+import json
+import statistics
+import sys
+import time
+
+from selenium import webdriver
+from selenium.webdriver.firefox.options import Options
+
+URL = "http://127.0.0.1:8787/index.html"
+LABEL = sys.argv[1]
+WARM = int(sys.argv[2]) if len(sys.argv) > 2 else 15
+OUT = f"{LABEL}.json"
+
+COLLECT = """
+const nav = performance.getEntriesByType('navigation')[0];
+const paints = Object.fromEntries(
+  performance.getEntriesByType('paint').map(p => [p.name, p.startTime]));
+const res = performance.getEntriesByType('resource')
+  .filter(r => new URL(r.name).origin === location.origin);
+return {
+  // network portion of the navigation itself
+  navFetch: nav.responseEnd - nav.fetchStart,
+  navTransferSize: nav.transferSize,
+  domContentLoaded: nav.domContentLoadedEventEnd,
+  loadEvent: nav.loadEventEnd,
+  firstPaint: paints['first-paint'] ?? null,
+  firstContentfulPaint: paints['first-contentful-paint'] ?? null,
+  sameOriginRequests: res.length,
+  sameOriginBytes: res.reduce((a, r) => a + r.transferSize, 0),
+  sameOriginFetchMs: res.reduce((a, r) => a + r.duration, 0),
+  swControlled: !!(navigator.serviceWorker && navigator.serviceWorker.controller),
+};
+"""
+
+
+def load_once(driver, new_tab):
+    if new_tab:
+        driver.switch_to.new_window("tab")
+    driver.get(URL)
+    # let paint entries and late resource entries land
+    time.sleep(0.6)
+    return driver.execute_script(COLLECT)
+
+
+opts = Options()
+opts.add_argument("-headless")
+# deny geolocation so every run takes the same code path
+opts.set_preference("permissions.default.geo", 2)
+opts.set_preference("datareporting.policy.dataSubmissionEnabled", False)
+
+driver = webdriver.Firefox(options=opts)
+runs = []
+try:
+    runs.append({"kind": "cold", **load_once(driver, new_tab=False)})
+    for i in range(WARM):
+        runs.append({"kind": "warm", **load_once(driver, new_tab=True)})
+        # keep tab count sane
+        if len(driver.window_handles) > 4:
+            driver.close()
+            driver.switch_to.window(driver.window_handles[-1])
+finally:
+    driver.quit()
+
+warm = [r for r in runs if r["kind"] == "warm"]
+
+
+def med(key):
+    vals = [r[key] for r in warm if r[key] is not None]
+    return round(statistics.median(vals), 1) if vals else None
+
+
+summary = {
+    "label": LABEL,
+    "coldLoadEvent": round(runs[0]["loadEvent"], 1),
+    "warmMedians": {
+        k: med(k)
+        for k in (
+            "navFetch", "firstPaint", "firstContentfulPaint",
+            "domContentLoaded", "loadEvent",
+            "sameOriginRequests", "sameOriginBytes", "sameOriginFetchMs",
+        )
+    },
+    "lastWarm": {k: runs[-1][k] for k in ("loadEvent", "domContentLoaded",
+                                          "firstContentfulPaint")},
+    "swControlled": runs[-1]["swControlled"],
+}
+
+with open(OUT, "w") as fh:
+    json.dump({"summary": summary, "runs": runs}, fh, indent=2)
+print(json.dumps(summary, indent=2))
