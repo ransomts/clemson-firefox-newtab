@@ -1,0 +1,28 @@
+#!/usr/bin/env bash
+# Replay the request set a new tab issues, in one curl invocation so
+# connection reuse happens exactly when the server permits it.
+# Artwork/favicons are sent conditionally (that's what the browser does
+# under no-cache); index.html and bookmarks.json are sent plain.
+set -euo pipefail
+BASE=http://127.0.0.1:8787
+IMS='If-Modified-Since: Mon, 25 Aug 2026 00:00:00 GMT'
+FMT='%{url.path} %{response_code} conn=%{num_connects} t=%{time_total}s\n'
+
+ART=(Footer_Layer1.png Footer_Layer2.png Footer_Layer3.png Footer_Layer4.png
+     ClemsonUniversity_RGB__Orange.png Paw_RGB__Orange.png paw-orange.png)
+FAVS=$(ls ~/.local/share/firefox-newtab/resources/favicons/)
+
+# each segment needs its own -s -o -w: --next resets per-URL options
+args=(-s -o /dev/null -w "$FMT" "$BASE/index.html")
+args+=(--next -s -o /dev/null -w "$FMT" "$BASE/bookmarks.json")
+for f in "${ART[@]}"; do
+  args+=(--next -s -o /dev/null -w "$FMT" -H "$IMS" "$BASE/resources/$f")
+done
+for f in $FAVS; do
+  args+=(--next -s -o /dev/null -w "$FMT" -H "$IMS" "$BASE/resources/favicons/$f")
+done
+
+start=$(date +%s.%N)
+curl "${args[@]}"
+end=$(date +%s.%N)
+echo "TOTAL wall: $(echo "$end $start" | awk '{printf "%.1f ms", ($1-$2)*1000}')"

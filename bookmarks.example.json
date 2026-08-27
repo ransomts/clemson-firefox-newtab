@@ -1,0 +1,26 @@
+{
+  "version": 1,
+  "categories": [
+    {
+      "name": "Communication",
+      "links": [
+        { "title": "Mail", "url": "https://mail.example.com/", "key": "m" },
+        { "title": "Chat", "url": "https://chat.example.com/", "key": "h" }
+      ]
+    },
+    {
+      "name": "School",
+      "links": [
+        { "title": "Canvas", "url": "https://example.instructure.com/courses", "key": "c" },
+        { "title": "Portal", "url": "https://portal.example.edu/", "key": "p" }
+      ]
+    },
+    {
+      "name": "Tools",
+      "links": [
+        { "title": "Git", "url": "https://github.com/", "key": "g" },
+        { "title": "Docs", "url": "https://docs.example.com/" }
+      ]
+    }
+  ]
+}

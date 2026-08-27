@@ -1,0 +1,182 @@
+#!/usr/bin/env python3
+"""Serve the Firefox new-tab page on loopback only.
+
+Wraps http.server but suppresses the per-request log line, so opening
+tabs all day doesn't flood the journal. Real errors still surface.
+
+Also accepts PUT /bookmarks.json from the page itself, so the settings
+panel's bookmark editor can write the file back. See the guards on
+do_PUT before widening what this accepts.
+"""
+import functools
+import json
+import os
+import shutil
+import sys
+from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
+
+# Override with FIREFOX_NEWTAB_ROOT if the clone lives elsewhere.
+ROOT = os.environ.get(
+    "FIREFOX_NEWTAB_ROOT",
+    os.path.expanduser("~/.local/share/firefox-newtab"),
+)
+HOST = "127.0.0.1"
+PORT = 8787
+
+# Only this one file is writable, and only from the page itself.
+WRITABLE_PATH = "/bookmarks.json"
+MAX_BODY = 256 * 1024
+ALLOWED_ORIGINS = {
+    "http://127.0.0.1:%d" % PORT,
+    "http://localhost:%d" % PORT,
+}
+
+
+class QuietHandler(SimpleHTTPRequestHandler):
+    # HTTP/1.1 for keep-alive: a new tab issues ~20 requests, and under
+    # the base class's default HTTP/1.0 every one paid a fresh TCP
+    # handshake. Safe here because the base class sends Content-Length on
+    # every file response and 304, and the 204 from do_PUT has no body by
+    # definition.
+    protocol_version = "HTTP/1.1"
+
+    # Keep-alive without TCP_NODELAY reintroduced the Nagle/delayed-ACK
+    # stall: headers and body go out as two small writes, and on a reused
+    # connection the second one sat ~40ms waiting for an ACK (measured on
+    # bookmarks.json, 41ms for a 2.7KB file). HTTP/1.0 masked it because
+    # closing the connection flushed everything.
+    disable_nagle_algorithm = True
+
+    def log_message(self, fmt, *args):
+        pass
+
+    # Three freshness tiers, shaped by a measured Firefox behavior: on
+    # loopback, "no-cache" (revalidate) degenerates into a full
+    # re-download - Firefox races its disk cache against the network and
+    # the loopback network wins, so it never sends If-Modified-Since at
+    # all (profiled 2026-08-27: app.js and style.css came back 200 with
+    # full bodies on every warm tab). So revalidation buys nothing here.
+    # Instead: index.html is the one mutable entry point (no-cache, 3KB,
+    # re-fetched per tab) and do_GET stamps ?v=<mtime> onto the style.css
+    # and app.js references as it serves it. The stamped assets are
+    # immutable: cached forever under that URL, zero requests on a warm
+    # tab, and a stable cache entry Firefox's JS bytecode cache can
+    # attach to. Any edit changes the stamp, which makes the 2026-08-21
+    # stale-editor-code hazard structurally impossible rather than
+    # merely revalidated away. bookmarks.json stays no-store: the page
+    # always fetches it with cache:'no-store' anyway, and hand edits to
+    # the file should never race a cached copy.
+    NEVER_STORE = ("/bookmarks.json",)
+    ENTRY_POINTS = ("/", "/index.html", "/sw.js")
+    STAMPED = ("/style.css", "/app.js")
+
+    def end_headers(self):
+        path = self.path.split("?", 1)[0]
+        if path in self.NEVER_STORE:
+            self.send_header("Cache-Control", "no-store, must-revalidate")
+        elif path in self.ENTRY_POINTS:
+            self.send_header("Cache-Control", "no-cache")
+        elif path in self.STAMPED:
+            self.send_header("Cache-Control", "max-age=31536000, immutable")
+        else:
+            # Artwork: ~385KB on the wire but ~20MB of decoded bitmap,
+            # regenerated rarely (sprite/favicon script runs). An hour of
+            # max-age means a warm tab makes zero requests for it; the
+            # cost is regenerated artwork taking up to an hour to appear
+            # unless you hard-reload once.
+            self.send_header("Cache-Control", "max-age=3600")
+        super().end_headers()
+
+    def do_GET(self):
+        if self.path.split("?", 1)[0] in ("/", "/index.html"):
+            try:
+                with open(os.path.join(ROOT, "index.html"), "rb") as fh:
+                    body = fh.read()
+                for ref in ("style.css", "app.js"):
+                    v = int(os.stat(os.path.join(ROOT, ref)).st_mtime)
+                    body = body.replace(
+                        ref.encode(), b"%s?v=%d" % (ref.encode(), v), 1)
+            except OSError:
+                self.send_error(404, "index.html unreadable")
+                return
+            self.send_response(200)
+            self.send_header("Content-Type", "text/html; charset=utf-8")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+            return
+        super().do_GET()
+
+    def log_error(self, fmt, *args):
+        sys.stderr.write("%s - %s\n" % (self.address_string(), fmt % args))
+
+    def do_PUT(self):
+        # Three independent guards. A cross-origin PUT already triggers a
+        # CORS preflight that this server never answers, so a hostile page
+        # can't reach here at all - the origin and loopback checks are
+        # defence in depth for anything that bypasses the browser.
+        if self.path != WRITABLE_PATH:
+            self.send_error(404, "not writable")
+            return
+        if self.client_address[0] not in ("127.0.0.1", "::1"):
+            self.send_error(403, "loopback only")
+            return
+        # The WebExtension build of the page saves from a moz-extension://
+        # (Firefox) or chrome-extension:// (Chromium) origin whose id is
+        # per-install, so match the scheme. Any extension granted host
+        # access to this port could write here, but such an extension
+        # could already talk to every loopback service; the guard's job is
+        # keeping ordinary web pages out.
+        origin = self.headers.get("Origin", "")
+        if origin not in ALLOWED_ORIGINS and not origin.startswith(
+                ("moz-extension://", "chrome-extension://")):
+            self.send_error(403, "bad origin")
+            return
+
+        try:
+            length = int(self.headers.get("Content-Length", "0"))
+        except ValueError:
+            self.send_error(400, "bad length")
+            return
+        if length <= 0 or length > MAX_BODY:
+            self.send_error(413, "bad body size")
+            return
+
+        try:
+            text = self.rfile.read(length).decode("utf-8")
+        except UnicodeDecodeError:
+            self.send_error(400, "not utf-8")
+            return
+
+        # Validate before writing. The CSV this replaced degraded one line at
+        # a time; JSON fails whole-file, so refusing to persist anything that
+        # won't parse is what keeps a bad save from emptying the page.
+        try:
+            doc = json.loads(text)
+        except ValueError:
+            self.send_error(400, "not valid json")
+            return
+        if not isinstance(doc, dict) or not isinstance(doc.get("categories"), list):
+            self.send_error(400, "expected an object with a categories list")
+            return
+
+        target = os.path.join(ROOT, "bookmarks.json")
+        # Keep one generation back: this overwrites hand-maintained data,
+        # so a bad save shouldn't be the end of the list.
+        if os.path.exists(target):
+            shutil.copy2(target, target + ".bak")
+        # Write to a sibling then rename, so an interrupted write can never
+        # leave a truncated bookmarks.json behind.
+        tmp = target + ".tmp"
+        with open(tmp, "w", encoding="utf-8", newline="") as fh:
+            fh.write(text)
+        os.replace(tmp, target)
+
+        self.send_response(204)
+        self.end_headers()
+
+
+handler = functools.partial(QuietHandler, directory=ROOT)
+with ThreadingHTTPServer((HOST, PORT), handler) as httpd:
+    print(f"serving {ROOT} on http://{HOST}:{PORT}", flush=True)
+    httpd.serve_forever()

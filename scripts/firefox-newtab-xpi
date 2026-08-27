@@ -1,0 +1,49 @@
+#!/usr/bin/env bash
+# Build the WebExtension variant of the new-tab page.
+#
+# Stages the exact files the loopback server serves (index.html, app.js,
+# style.css, resources/) next to extension/manifest.json and zips them
+# into an .xpi. The page itself detects moz-extension:// at runtime and
+# reaches the server only for bookmarks.json, so this needs no source
+# transformation - but it does mean every page edit needs a rebuild,
+# version bump, and re-sign to reach the extension.
+#
+# Stock Firefox only installs signed extensions. Unlisted signing is free:
+#   1. API credentials: https://addons.mozilla.org/developers/addon/api/key/
+#   2. npx web-ext sign --channel unlisted --source-dir extension/build \
+#        --api-key "$AMO_JWT_ISSUER" --api-secret "$AMO_JWT_SECRET"
+#   3. Install the signed .xpi it drops in web-ext-artifacts/ via
+#      about:addons > gear > Install Add-on From File, then disable
+#      New Tab Override so the two stop fighting over the new tab.
+set -euo pipefail
+
+ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+
+# stage <build-dir> <manifest>: everything except the manifest is
+# identical between the Firefox (MV2) and Chromium (MV3) builds.
+stage() {
+  rm -rf "$1"
+  mkdir -p "$1"
+  cp "$ROOT/index.html" "$ROOT/style.css" "$ROOT/app.js" "$1/"
+  cp "$ROOT"/extension/icon-*.png "$1/"
+  cp "$ROOT/extension/$2" "$1/manifest.json"
+  cp -r "$ROOT/resources" "$1/resources"
+  # bookmarks.json stays out on purpose: it is live data owned by the
+  # server; baking a copy in would resurrect stale bookmarks whenever
+  # the server is unreachable and the localStorage cache is cold.
+}
+
+VERSION=$(python3 -c "import json; print(json.load(open('$ROOT/extension/manifest.json'))['version'])")
+
+stage "$ROOT/extension/build" manifest.json
+XPI="$ROOT/extension/clemson-newtab-$VERSION.xpi"
+rm -f "$XPI"
+(cd "$ROOT/extension/build" && zip -qr "$XPI" .)
+echo "built $XPI (Firefox, unsigned)"
+
+stage "$ROOT/extension/build-chrome" manifest.chrome.json
+ZIP="$ROOT/extension/clemson-newtab-chrome-$VERSION.zip"
+rm -f "$ZIP"
+(cd "$ROOT/extension/build-chrome" && zip -qr "$ZIP" .)
+echo "built $ZIP (Chromium; or Load Unpacked -> extension/build-chrome/)"
+echo "Firefox next step: sign the xpi - see the comment block at the top"

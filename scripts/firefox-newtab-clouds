@@ -1,0 +1,150 @@
+#!/usr/bin/env python3
+"""Regenerate the drifting-cloud sprites for the new-tab page.
+
+cloud1.png and cloud2.png are the hand-drawn masters, but they were
+authored with a peak alpha of 13/255 - about 5% opacity, essentially
+invisible. The previous -fx/-storm variants were made by multiplying
+alpha by 18 to bring them up to full strength, which stretched those
+14 alpha levels across the whole 0-255 range while leaving them 14
+levels apart:
+
+    [0, 18, 36, 54, 72, 90, 108, 126, 144, 162, 180, 198, 216, 234]
+
+Multiplication can't recover gradations that were never captured, so
+every soft edge banded in 18/255 steps. Against the page's smooth sky
+gradient that reads as chunky or pixelated.
+
+The geometry is intact, though, so the fix is to interpolate rather
+than multiply:
+
+  1. take the master's alpha as floating point and normalise to 0..1,
+     so no step of the pipeline re-quantises to 8-bit;
+  2. resample to 4x with LANCZOS *while still in float* - the filter
+     produces continuous intermediate values, which is what refills the
+     gaps between the original 14 levels;
+  3. blur the alpha slightly to settle any residual stepping;
+  4. only then scale to the target peak and quantise once, at the end.
+
+4x rather than the previous 3x because fog spawns clouds up to 50vw
+(960px on a 1920px viewport) and storm up to 46vw, which pushed the
+smaller sprite roughly 2x past its own resolution.
+
+The masters are read-only inputs; only the -fx/-storm files are written.
+"""
+import os
+import sys
+
+from PIL import Image, ImageFilter
+
+# Override with FIREFOX_NEWTAB_ROOT if the clone lives elsewhere.
+ROOT = os.path.join(
+    os.environ.get(
+        "FIREFOX_NEWTAB_ROOT",
+        os.path.expanduser("~/.local/share/firefox-newtab"),
+    ),
+    "resources",
+    "clouds",
+)
+SCALE = 4
+BLUR_RADIUS = 1.2  # in output pixels, so it scales with SCALE
+
+
+def smoothstep(t):
+    return t * t * (3 - 2 * t)
+
+
+def curve(t):
+    """Alpha response curve, applied to normalised 0..1 alpha.
+
+    The masters are an even haze rather than a shape with a soft edge:
+    one pixel in 10,673 is fully opaque, and the alpha ramps over a median
+    of 52px on a 263px image. Composited at page opacity that reads as
+    fuzzy. smoothstep applied twice steepens the falloff so each cloud
+    gets a defined core and a tighter rim - it redistributes the alpha
+    that is already there, and invents no detail the master never had.
+
+    Identity (lambda t: t) restores the previous, softer look.
+    """
+    return smoothstep(smoothstep(t))
+
+WHITE = (255, 255, 255)
+STORM = (64, 53, 84)
+
+# master -> (peak alpha to restore, [(suffix, rgb), ...])
+JOBS = {
+    "cloud1.png": (234, [("-fx", WHITE), ("-storm", STORM)]),
+    "cloud2.png": (252, [("-fx", WHITE), ("-storm", STORM)]),
+}
+
+
+def build_alpha(master_path, peak):
+    """Return the finished 8-bit alpha at SCALE x, scaled to `peak`."""
+    src = Image.open(master_path).convert("RGBA").getchannel("A")
+    src_peak = max(src.getdata())
+    if not src_peak:
+        raise ValueError("%s has a fully transparent alpha channel" % master_path)
+
+    # Mode "F" keeps 32-bit floats through the resize, so LANCZOS is free to
+    # emit the in-between values that the 14-level master never held. This
+    # interpolation is what actually refills the gaps; everything after it
+    # is tidying.
+    alpha = src.convert("F").point(lambda v: v / src_peak)
+    alpha = alpha.resize((src.width * SCALE, src.height * SCALE), Image.LANCZOS)
+
+    # Clamp before quantising: LANCZOS overshoots slightly at hard edges and
+    # would otherwise wrap around when cast to a byte. Done over getdata()
+    # rather than point() because point() on an "F" image probes the lambda
+    # symbolically to reduce it to a scale/offset, which min()/max() can't
+    # survive.
+    a8 = Image.new("L", alpha.size)
+    a8.putdata([round(curve(max(0.0, min(1.0, v))) * peak) for v in alpha.getdata()])
+
+    # GaussianBlur only accepts 8-bit modes, so it has to run after the
+    # cast rather than before. That is fine here: the resize above already
+    # produced a continuous ramp, so this is now ~235 levels being smoothed
+    # rather than the master's 14.
+    blurred = a8.filter(ImageFilter.GaussianBlur(BLUR_RADIUS))
+
+    # The blur rounds off the interior plateau too, which would leave the
+    # sprite a few percent fainter than the file it replaces. Rescale so the
+    # peak lands exactly where it did before: the point of this pass is
+    # smoother edges, not a different cloud density. point() is safe here -
+    # on an "L" image it builds a real 256-entry lookup table.
+    current = max(blurred.getdata())
+    if current and current != peak:
+        blurred = blurred.point(lambda v: min(255, round(v * peak / current)))
+    return blurred
+
+
+def main():
+    wrote = 0
+    for master, (peak, variants) in JOBS.items():
+        path = os.path.join(ROOT, master)
+        if not os.path.exists(path):
+            print("missing master: %s" % path)
+            return 1
+        # Both variants of a master share one alpha; only the flat RGB differs.
+        a8 = build_alpha(path, peak)
+        w, h = a8.size
+        for suffix, rgb in variants:
+            out = Image.merge("RGBA", (
+                Image.new("L", (w, h), rgb[0]),
+                Image.new("L", (w, h), rgb[1]),
+                Image.new("L", (w, h), rgb[2]),
+                a8,
+            ))
+            name = master.replace(".png", suffix + ".png")
+            dest = os.path.join(ROOT, name)
+            tmp = dest + ".tmp"
+            out.save(tmp, "PNG", optimize=True)
+            os.replace(tmp, dest)
+            levels = len(set(a8.getdata()))
+            print("  %-18s %4dx%-4d  peakA=%3d  alpha levels: %3d"
+                  % (name, w, h, max(a8.getdata()), levels))
+            wrote += 1
+    print("\nregenerated %d sprites at %dx from the masters" % (wrote, SCALE))
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
