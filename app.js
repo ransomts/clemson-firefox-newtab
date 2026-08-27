@@ -1,8 +1,9 @@
     // This same file runs in two homes: served from the loopback server,
-    // or bundled into the WebExtension (moz-extension://). Static assets
-    // are relative either way, but bookmarks.json is live data owned by
-    // the server, so the extension page must reach across origins for it.
-    const IS_EXTENSION = location.protocol === 'moz-extension:';
+    // or bundled into a WebExtension (moz-extension:// in Firefox,
+    // chrome-extension:// in Chromium). Static assets are relative either
+    // way, but bookmarks.json is live data owned by the server, so the
+    // extension page must reach across origins for it.
+    const IS_EXTENSION = /^(moz|chrome)-extension:$/.test(location.protocol);
     const DATA_BASE = IS_EXTENSION ? 'http://127.0.0.1:8787/' : '';
 
     const SQUASH_REF_HEIGHT = 700;

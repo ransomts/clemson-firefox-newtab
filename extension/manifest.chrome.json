@@ -1,0 +1,16 @@
+{
+  "manifest_version": 3,
+  "name": "Clemson New Tab",
+  "version": "1.0.0",
+  "description": "Clemson-themed new tab page, served from the extension itself.",
+  "icons": {
+    "48": "icon-48.png",
+    "96": "icon-96.png"
+  },
+  "chrome_url_overrides": {
+    "newtab": "index.html"
+  },
+  "host_permissions": [
+    "http://127.0.0.1:8787/*"
+  ]
+}

@@ -29,5 +29,7 @@ resources/favicons/
 
 # WebExtension build output
 extension/build/
+extension/build-chrome/
 extension/*.xpi
+extension/*.zip
 web-ext-artifacts/

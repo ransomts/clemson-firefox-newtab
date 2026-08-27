@@ -18,20 +18,32 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-BUILD="$ROOT/extension/build"
 
-rm -rf "$BUILD"
-mkdir -p "$BUILD"
-cp "$ROOT/index.html" "$ROOT/style.css" "$ROOT/app.js" "$BUILD/"
-cp "$ROOT/extension/manifest.json" "$ROOT"/extension/icon-*.png "$BUILD/"
-cp -r "$ROOT/resources" "$BUILD/resources"
-# bookmarks.json stays out on purpose: it is live data owned by the
-# server; baking a copy in would resurrect stale bookmarks whenever the
-# server is unreachable and the localStorage cache is cold.
+# stage <build-dir> <manifest>: everything except the manifest is
+# identical between the Firefox (MV2) and Chromium (MV3) builds.
+stage() {
+  rm -rf "$1"
+  mkdir -p "$1"
+  cp "$ROOT/index.html" "$ROOT/style.css" "$ROOT/app.js" "$1/"
+  cp "$ROOT"/extension/icon-*.png "$1/"
+  cp "$ROOT/extension/$2" "$1/manifest.json"
+  cp -r "$ROOT/resources" "$1/resources"
+  # bookmarks.json stays out on purpose: it is live data owned by the
+  # server; baking a copy in would resurrect stale bookmarks whenever
+  # the server is unreachable and the localStorage cache is cold.
+}
 
 VERSION=$(python3 -c "import json; print(json.load(open('$ROOT/extension/manifest.json'))['version'])")
+
+stage "$ROOT/extension/build" manifest.json
 XPI="$ROOT/extension/clemson-newtab-$VERSION.xpi"
 rm -f "$XPI"
-(cd "$BUILD" && zip -qr "$XPI" .)
-echo "built $XPI (unsigned)"
-echo "next: sign it - see the comment block at the top of this script"
+(cd "$ROOT/extension/build" && zip -qr "$XPI" .)
+echo "built $XPI (Firefox, unsigned)"
+
+stage "$ROOT/extension/build-chrome" manifest.chrome.json
+ZIP="$ROOT/extension/clemson-newtab-chrome-$VERSION.zip"
+rm -f "$ZIP"
+(cd "$ROOT/extension/build-chrome" && zip -qr "$ZIP" .)
+echo "built $ZIP (Chromium; or Load Unpacked -> extension/build-chrome/)"
+echo "Firefox next step: sign the xpi - see the comment block at the top"

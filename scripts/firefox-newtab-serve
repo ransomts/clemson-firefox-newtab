@@ -122,12 +122,14 @@ class QuietHandler(SimpleHTTPRequestHandler):
             self.send_error(403, "loopback only")
             return
         # The WebExtension build of the page saves from a moz-extension://
-        # origin whose UUID is random per install, so match the scheme.
-        # Any extension granted host access to this port could write here,
-        # but such an extension could already talk to every loopback
-        # service; the guard's job is keeping ordinary web pages out.
+        # (Firefox) or chrome-extension:// (Chromium) origin whose id is
+        # per-install, so match the scheme. Any extension granted host
+        # access to this port could write here, but such an extension
+        # could already talk to every loopback service; the guard's job is
+        # keeping ordinary web pages out.
         origin = self.headers.get("Origin", "")
-        if origin not in ALLOWED_ORIGINS and not origin.startswith("moz-extension://"):
+        if origin not in ALLOWED_ORIGINS and not origin.startswith(
+                ("moz-extension://", "chrome-extension://")):
             self.send_error(403, "bad origin")
             return
 

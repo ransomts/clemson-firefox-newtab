@@ -58,7 +58,8 @@ bar).
 
 ## Requirements
 
-- Firefox
+- Firefox, or a Chromium-family browser (Chrome/Edge — each option in
+  step 3 notes its Chromium equivalent)
 - A way to point new tabs at this page's URL — three options, all covered
   in step 3: the
   [New Tab Override](https://addons.mozilla.org/firefox/addon/new-tab-override/)
@@ -155,6 +156,11 @@ Three ways to do this, in increasing order of setup effort:
 | B: your own extension | no | no | rebuild + re-sign |
 | C: autoconfig | yes | no | nothing |
 
+The instructions below are written for Firefox, but A and B have direct
+Chromium equivalents (noted inline), and C's Chromium analog is an
+enterprise policy. Safari has no new-tab override mechanism at all — the
+page works there only as a homepage.
+
 #### Option A: New Tab Override extension (easiest)
 
 1. Install [New Tab Override](https://addons.mozilla.org/firefox/addon/new-tab-override/).
@@ -201,6 +207,13 @@ On Firefox flavors that allow unsigned extensions (Developer Edition,
 Nightly, and ESR, via `xpinstall.signatures.required=false` in
 `about:config`), you can skip step 4 and install the unsigned `.xpi`
 directly.
+
+**Chrome / Edge:** the build script also produces a Chromium build (MV3,
+from `extension/manifest.chrome.json`) — no signing or store account
+needed for personal use: open `chrome://extensions`, enable Developer
+mode, and *Load unpacked* pointing at `extension/build-chrome/`. The
+`DATA_BASE` note in step 2 applies the same way; the vendored server
+accepts editor saves from `chrome-extension://` origins too.
 
 The trade-off: the extension bundles a copy of the page, so every edit to
 `index.html`/`app.js`/`style.css` needs a rebuild, a version bump in the
@@ -269,6 +282,12 @@ Caveats, honestly stated:
 - To revert, delete both files and restart Firefox.
 - Focus behavior flips: typing after Ctrl+T goes to the page's search box,
   so reaching the real address bar is Ctrl+L (same as under the extension).
+
+The Chromium-family analog of this option is the
+[`NewTabPageLocation`](https://chromeenterprise.google/policies/#NewTabPageLocation)
+enterprise policy (a registry key on Windows, a plist on macOS, a JSON
+file under `/etc/opt/chrome/policies/managed/` on Linux) — same idea:
+the browser's native new tab points at your URL, no extension involved.
 
 ### 4. (Optional) Allow location access
 
