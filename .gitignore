@@ -26,3 +26,8 @@ bookmarks.json
 # hostnames of whatever you have bookmarked. Regenerate with
 # scripts/firefox-newtab-favicons.
 resources/favicons/
+
+# WebExtension build output
+extension/build/
+extension/*.xpi
+web-ext-artifacts/

@@ -1,0 +1,25 @@
+{
+  "manifest_version": 2,
+  "name": "Clemson New Tab",
+  "version": "1.0.0",
+  "description": "Clemson-themed new tab page, served from the extension itself instead of a redirect through New Tab Override.",
+  "browser_specific_settings": {
+    "gecko": {
+      "id": "clemson-newtab@ransomts",
+      "strict_min_version": "115.0",
+      "data_collection_permissions": {
+        "required": ["none"]
+      }
+    }
+  },
+  "icons": {
+    "48": "icon-48.png",
+    "96": "icon-96.png"
+  },
+  "chrome_url_overrides": {
+    "newtab": "index.html"
+  },
+  "permissions": [
+    "http://127.0.0.1:8787/*"
+  ]
+}
