@@ -1,13 +1,13 @@
 # Clemson Firefox New Tab
 
-A single-file, fully custom Firefox "new tab" page: an animated Clemson-themed
-skyline wallpaper that reacts to window size, cycles sky color with real
+A fully custom Firefox "new tab" page: an animated Clemson-themed skyline
+wallpaper that reacts to window size, cycles sky color with real
 sunrise/sunset times, layers in live weather effects (Open-Meteo), and shows
-a small set of personal bookmark shortcuts pulled from a CSV file.
+a small set of personal bookmark shortcuts you manage with an in-page editor.
 
-There's no build step and no dependencies — it's one `index.html` (HTML +
-CSS + vanilla JS) plus a folder of image assets and a `bookmarks.csv` file
-you edit by hand.
+There's no build step and no dependencies — a small `index.html` shell plus
+`style.css` and `app.js` (vanilla JS), a folder of image assets, and a
+`bookmarks.json` file the page edits for you (or you edit by hand).
 
 ## Why this exists
 
@@ -23,9 +23,9 @@ toolbar, but:
   new tab ([Mozilla bug](https://bugzilla.mozilla.org/show_bug.cgi?id=1345920)),
   so you lose "just start typing a search" muscle memory.
 
-This project works around both: bookmarks are defined in a simple CSV file
-and rendered as grouped link cards on the page itself, and an autofocused,
-pre-selected "Search Google" box in the center of the page replaces the
+This project works around both: bookmarks are defined in a simple JSON file
+— edited from the page itself — and rendered as grouped link cards, and an
+autofocused search box in the center of the page replaces the
 address-bar-typing habit (use `Cmd+L` / `Ctrl+L` if you want the real address
 bar).
 
@@ -41,14 +41,20 @@ bar).
   [Open-Meteo](https://open-meteo.com/) API and animates matching effects:
   drifting clouds (cloudy/fog), rain, snow, and darker fast-moving storm
   clouds — plus a small time + weather text widget.
-- **Bookmarks section** — reads `bookmarks.csv`, groups links by category,
-  and renders them as cards with favicons (Google's favicon service, with a
-  Clemson paw fallback for domains that don't resolve one). Cards hide
-  automatically if the window gets too short to fit them without colliding
-  with the search box, and stack into a single scrollable column on narrow
-  windows.
-- **Search box** — autofocused "Search Google" input in place of relying on
-  the (new-tab-inaccessible) address bar.
+- **Bookmarks section** — reads `bookmarks.json`, groups links by category,
+  and renders them as cards with favicons (vendored local copies first,
+  Google's favicon service as fallback, a Clemson paw as last resort).
+  Links can carry a one-character **speedkey**, opened with Alt+key from
+  anywhere on the page. Cards hide automatically if the window gets too
+  short to fit them without colliding with the search box, and stack into
+  a single scrollable column on narrow windows.
+- **In-page editing** — a settings gear opens a panel for search engine,
+  clock format, temperature unit, weather effects, and location (all
+  persisted to `localStorage`), plus a bookmark editor that adds, removes,
+  and reorders links and saves them back to `bookmarks.json` through the
+  bundled server.
+- **Search box** — autofocused input in place of relying on the
+  (new-tab-inaccessible) address bar; the engine is selectable in settings.
 
 ## Requirements
 
@@ -65,10 +71,11 @@ bar).
 
 ### 1. Get the files somewhere they can be served over HTTP(S)
 
-Firefox blocks `fetch()` (used to load `bookmarks.csv`) under `file://`, so
+Firefox blocks `fetch()` (used to load `bookmarks.json`) under `file://`, so
 this page needs to be served, not opened directly from disk. Any static web
 host works — GitHub Pages, a university web space, Netlify, a local dev
-server, etc.
+server, etc. — though the in-page bookmark editor can only save on a host
+that accepts its PUTs, which the vendored server below does.
 
 Clone the repo onto that host:
 
@@ -79,11 +86,21 @@ git clone <this-repo-url>
 #### Hosting
 
 Any static file host is fine as long as the whole folder (not just
-`index.html`) is uploaded, so `resources/` and `bookmarks.csv` stay
-alongside it with the same relative paths.
+`index.html`) is uploaded, so `style.css`, `app.js`, `resources/`, and
+`bookmarks.json` stay alongside it with the same relative paths.
 
-For local testing (not for the extension — Firefox still needs a real
-`http://` URL for it to treat as the new tab — but useful for iterating):
+The recommended host for a personal machine is the vendored
+`scripts/firefox-newtab-serve`: a loopback-only Python server tuned for
+this page — keep-alive, version-stamped immutable assets (a warm new tab
+transfers a few KB instead of re-downloading everything), and the guarded
+PUT endpoint the bookmark editor saves through. Run it from a systemd user
+unit for something permanent. There's also an opt-in offline fallback:
+`localStorage.setItem('newtab-offline-fallback', 'on')` in the page's
+console registers `sw.js`, which keeps the new tab rendering from cache if
+the server is ever down (off by default because the service-worker hop
+costs a few milliseconds per tab).
+
+For a quick look without any of that:
 
 ```bash
 python3 -m http.server 8000
@@ -126,7 +143,7 @@ falling back to Google's service, which matters for self-hosted things
 Google has never crawled. Re-run it after adding bookmarks; anything not
 yet vendored falls back to Google's service and then to the paw. Domains
 under `NO_FAVICON_DOMAIN_SUFFIXES` (near the bookmarks code in
-`index.html`) skip the lookup entirely and use the paw.
+`app.js`) skip the lookup entirely and use the paw.
 
 ### 3. Point Firefox's new tab at your hosted page
 
@@ -262,13 +279,20 @@ weather. If you deny it, the page falls back to Clemson, SC's coordinates.
 ## Project structure
 
 ```
-index.html              All markup, styles, and logic (single file, no build step)
+index.html               Markup shell (the server stamps versioned asset URLs into it)
+style.css                All styles
+app.js                   All logic (vanilla JS, no build step)
+sw.js                    Opt-in offline-fallback service worker (off by default)
 bookmarks.json           Your bookmark links (gitignored — see the example below)
 bookmarks.example.json   Schema reference: categories, links, optional speedkeys
+extension/               WebExtension packaging of the page (step 3, option B)
 scripts/
-  firefox-newtab-serve      Loopback-only static server, plus PUT for the editor
-  firefox-newtab-favicons   Vendors bookmark favicons into resources/favicons/
-  firefox-newtab-clouds     Regenerates the cloud sprites from the masters
+  firefox-newtab-serve        Loopback-only static server, plus PUT for the editor
+  firefox-newtab-favicons     Vendors bookmark favicons into resources/favicons/
+  firefox-newtab-clouds       Regenerates the cloud sprites from the masters
+  firefox-newtab-xpi          Builds the unsigned extension .xpi
+  firefox-newtab-profile      Headless-Firefox load-time profiler (needs selenium)
+  firefox-newtab-profile-net  curl replay of a new tab's request set
 resources/
   ClemsonUniversity_RGB__Orange.png   Clemson wordmark logo
   Paw_RGB__Orange.png                 Tiger paw graphic
@@ -284,9 +308,11 @@ resources/
 
 ## Customizing
 
-Everything lives in `index.html` as CSS custom properties and small,
-independent JS functions — there's no build step, so just edit and reload.
-A few starting points:
+Styles live in `style.css` (CSS custom properties), logic in `app.js`
+(small, independent functions) — there's no build step, so just edit and
+reload. When serving through `scripts/firefox-newtab-serve`, edits show up
+on the very next tab: the server stamps asset URLs with each file's mtime,
+so nothing stale can ever be cached. A few starting points:
 
 - **Sky colors** — see the keyframe tables near `buildSkyKeyframes()`.
 - **Mountain squash behavior** — `updateLayout()` and the `LAYERS` table.
@@ -296,11 +322,11 @@ A few starting points:
   call `startTimeDemo()` to rapidly cycle through a full day (`stopTimeDemo()`
   to stop), instead of waiting for real time to pass.
 - **Bookmark card styling** — `.bookmark-category`, `.bookmark-link`,
-  `.bookmark-category-title` in the `<style>` block.
+  `.bookmark-category-title` in `style.css`.
 
 ## Known limitations
 
-- Requires being served over `http(s)://` — `bookmarks.csv` won't load
+- Requires being served over `http(s)://` — `bookmarks.json` won't load
   under `file://`.
 - Weather and astronomical calculations depend on browser geolocation;
   without it, both fall back to Clemson, SC.
