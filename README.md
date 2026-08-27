@@ -53,8 +53,12 @@ bar).
 ## Requirements
 
 - Firefox
-- The [New Tab Override](https://addons.mozilla.org/firefox/addon/new-tab-override/)
-  extension (or similar) to point new tabs at this page's URL
+- A way to point new tabs at this page's URL — three options, all covered
+  in step 3: the
+  [New Tab Override](https://addons.mozilla.org/firefox/addon/new-tab-override/)
+  extension, a self-signed WebExtension this repo can build for you, or
+  (with root access to the Firefox install) the extension-free autoconfig
+  method
 - Somewhere to host the files over `http(s)://` — see [Hosting](#hosting) below
 
 ## Setup
@@ -126,11 +130,128 @@ under `NO_FAVICON_DOMAIN_SUFFIXES` (near the bookmarks code in
 
 ### 3. Point Firefox's new tab at your hosted page
 
+Three ways to do this, in increasing order of setup effort:
+
+| | Root needed | New-tab flash | Page edits need |
+|---|---|---|---|
+| A: New Tab Override | no | yes | nothing |
+| B: your own extension | no | no | rebuild + re-sign |
+| C: autoconfig | yes | no | nothing |
+
+#### Option A: New Tab Override extension (easiest)
+
 1. Install [New Tab Override](https://addons.mozilla.org/firefox/addon/new-tab-override/).
 2. In its settings, choose "Custom URL" and enter the URL where you hosted
    `index.html` (e.g. `https://your-host.example.com/index.html`).
 3. Open a new tab — you should see the page load with the search box
    autofocused.
+
+One cost to know about: New Tab Override works by opening its own extension
+page and then *navigating* it to your URL, so every new tab pays a double
+navigation — visible as a brief flash before the page appears.
+
+#### Option B: build your own extension — no flash, no root
+
+This repo can package the page as a proper WebExtension that overrides the
+new tab directly (`chrome_url_overrides`), which removes the redirect hop:
+Firefox loads — and preloads — the page itself, and extension new-tab pages
+receive keyboard focus natively, so the search box works as designed.
+
+1. Edit `extension/manifest.json` and change the `gecko.id` to something
+   unique to you (any email-shaped string works).
+2. If you host `bookmarks.json` anywhere other than the loopback server on
+   port 8787, change `DATA_BASE` near the top of `app.js` — when running
+   as an extension, the page bundles all its assets but still fetches (and
+   the editor still saves) `bookmarks.json` from your server. The vendored
+   server already accepts editor saves from extension pages; a different
+   host needs to allow PUTs from `moz-extension://` origins.
+3. Build the package: `scripts/firefox-newtab-xpi` stages the page plus
+   assets and produces an unsigned `.xpi` under `extension/`.
+4. Release Firefox only installs signed extensions, but self-signing is
+   free and needs no review: create API credentials at
+   <https://addons.mozilla.org/developers/addon/api/key/>, then
+
+   ```bash
+   npx web-ext sign --channel unlisted --source-dir extension/build \
+     --api-key "$AMO_JWT_ISSUER" --api-secret "$AMO_JWT_SECRET"
+   ```
+
+   and install the signed `.xpi` it drops in `web-ext-artifacts/` via
+   `about:addons` → gear menu → *Install Add-on From File*.
+5. Disable New Tab Override if you had it — one new-tab owner at a time.
+
+On Firefox flavors that allow unsigned extensions (Developer Edition,
+Nightly, and ESR, via `xpinstall.signatures.required=false` in
+`about:config`), you can skip step 4 and install the unsigned `.xpi`
+directly.
+
+The trade-off: the extension bundles a copy of the page, so every edit to
+`index.html`/`app.js`/`style.css` needs a rebuild, a version bump in the
+manifest, a re-sign, and a reinstall. Pick this road once your page has
+stopped changing daily; while you're still tweaking, Option A or C keeps
+edits instant.
+
+#### Option C: autoconfig — no extension, no flash (needs root)
+
+Firefox's [autoconfig](https://support.mozilla.org/kb/customizing-firefox-using-autoconfig)
+mechanism can point the *native* new tab straight at the page. The tab loads
+your URL directly — no intermediate extension page — and Firefox preloads
+its new-tab page in a hidden browser, so the page is typically already
+rendered before you press Ctrl+T.
+
+Create two root-owned files in the Firefox install directory (commonly
+`/usr/lib/firefox` on Linux; adjust for your distro — this does not work
+for snap/flatpak Firefox, whose install dirs are read-only images):
+
+`defaults/pref/autoconfig.js`:
+
+```js
+pref("general.config.filename", "firefox.cfg");
+pref("general.config.obscure_value", 0);
+pref("general.config.sandbox_enabled", false);
+```
+
+`firefox.cfg` — note the first line **must** be a comment; the parser
+always skips it:
+
+```js
+// first line is skipped by the autoconfig parser - keep this comment
+try {
+  let AboutNewTab;
+  try {
+    ({ AboutNewTab } = ChromeUtils.importESModule("resource:///modules/AboutNewTab.sys.mjs"));
+  } catch (e) {
+    // older Firefox module layout
+    ({ AboutNewTab } = ChromeUtils.import("resource:///modules/AboutNewTab.jsm"));
+  }
+  AboutNewTab.newTabURL = "https://your-host.example.com/index.html";
+  // Let the page keep keyboard focus (its search box) instead of the URL
+  // bar. Firefox keeps focus in the URL bar for the configured new-tab
+  // URL unless this flag is set - it's the same mechanism extension
+  // new-tab pages use to receive focus.
+  AboutNewTab.willNotifyUser = true;
+} catch (e) {
+  Components.utils.reportError("newtab autoconfig failed: " + e);
+}
+```
+
+Then restart Firefox (`about:profiles` → "Restart normally…"). If you had
+New Tab Override installed, disable it first so the two don't fight over
+the new tab.
+
+Caveats, honestly stated:
+
+- `general.config.sandbox_enabled=false` is required for the cfg to reach
+  `ChromeUtils` — the cfg then runs with browser privileges. Keep both
+  files root-owned (`chmod 644`, owner `root`), which adds no real
+  exposure: anyone who can write to the Firefox install dir already owns
+  your browser.
+- A Firefox package update can drop the two files (package managers
+  usually leave unowned files alone, but a layout change won't). If a
+  stock new tab ever reappears after an update, re-create them.
+- To revert, delete both files and restart Firefox.
+- Focus behavior flips: typing after Ctrl+T goes to the page's search box,
+  so reaching the real address bar is Ctrl+L (same as under the extension).
 
 ### 4. (Optional) Allow location access
 
