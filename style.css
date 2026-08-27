@@ -1,0 +1,817 @@
+  :root {
+    /* Top/bottom sky colors, kept in sync with the time of day by the
+       script below. Initial values match the original night artwork so
+       there's no flash-of-wrong-color before the script runs. */
+    --sky-zenith: #0F0A24;
+    --sky-horizon: #1D1440;
+    /* vw-coefficients for each layer's "bottom" gap, set by the script
+       below. Each blends between its resting (tall-window) value and a
+       small nested-stack value (short-window) as viewport height shrinks. */
+    --l4-vw: 8.23;
+    --l3-vw: 3.33;
+    --l2-vw: 0.16;
+    --l1-vw: 0.47;
+    /* Set by the script below once weather data loads. */
+    --weather-tint: rgba(0, 0, 0, 0);
+  }
+
+  html, body {
+    margin: 0;
+    padding: 0;
+    width: 100%;
+    height: 100%;
+    overflow: hidden;
+    background: linear-gradient(to bottom, var(--sky-zenith), var(--sky-horizon));
+  }
+
+  .scene {
+    position: fixed;
+    inset: 0;
+    overflow: hidden;
+    background: linear-gradient(to bottom, var(--sky-zenith), var(--sky-horizon));
+    transition: background 60s linear;
+  }
+
+  /* Swapped in during startTimeDemo() so rapid applyTime() calls actually
+     keep up visually instead of endlessly chasing a 60s-eased target. */
+  .scene.demo-fast-sky {
+    transition: background 0.15s linear;
+  }
+
+  .scene img.layer {
+    position: absolute;
+    left: 0;
+    width: 100vw;
+    height: auto;
+    display: block;
+    pointer-events: none;
+  }
+
+  /* Weather wash sits above the sky gradient but below the mountain
+     layers, and transitions on its own faster timescale (the sky
+     gradient's 60s transition is meant for the slow day/night drift). */
+  #weather-overlay {
+    position: absolute;
+    inset: 0;
+    z-index: 0;
+    background: var(--weather-tint);
+    transition: background 4s ease;
+    pointer-events: none;
+  }
+
+  /* Drifting weather clouds, populated by JS directly into .scene (not a
+     separate positioned wrapper) so each cloud's own z-index can be set
+     individually - normally behind every mountain layer, but in fog a
+     cloud may get a higher z-index to drift in front of layer2/3/4
+     (never layer1, see JS). Separate from the fixed decorative clouds
+     baked into layer2's art. */
+  /* .weather-cloud is the positioning/movement wrapper (drift animation
+     lives here); .weather-cloud-art is the actual image, flipped
+     independently of movement direction so "which way it's facing" and
+     "which way it's drifting" can vary separately. */
+  .weather-cloud {
+    position: absolute;
+    height: auto;
+    z-index: 10;
+    animation-timing-function: linear;
+    animation-iteration-count: infinite;
+    pointer-events: none;
+  }
+
+  /* Plain background-image, not mask-image - Firefox treats mask-image as
+     a CORS-checked resource and refuses it entirely under file://
+     ("CORS request not http"), which broke local testing. Differently
+     colored clouds (e.g. storm's purple) are pre-tinted PNG files instead
+     of a runtime recolor. */
+  .weather-cloud-art {
+    width: 100%;
+    height: 100%;
+    background-size: contain;
+    background-repeat: no-repeat;
+    background-position: center;
+  }
+
+  .weather-cloud-art.flipped {
+    transform: scaleX(-1);
+  }
+
+  /* Two drift directions - JS assigns each cloud one or the other.
+     Both fade in/out over the first and last ~8% of the drift so clouds
+     never just pop into view at the screen edge; --cloud-opacity is the
+     per-instance target set by JS (depth/density variation). */
+  @keyframes drift-cloud {
+    0%   { transform: translateX(-30vw); opacity: 0; }
+    8%   { opacity: var(--cloud-opacity, 0.5); }
+    92%  { opacity: var(--cloud-opacity, 0.5); }
+    100% { transform: translateX(130vw); opacity: 0; }
+  }
+
+  @keyframes drift-cloud-reverse {
+    0%   { transform: translateX(130vw); opacity: 0; }
+    8%   { opacity: var(--cloud-opacity, 0.5); }
+    92%  { opacity: var(--cloud-opacity, 0.5); }
+    100% { transform: translateX(-30vw); opacity: 0; }
+  }
+
+  /* Falling rain/snow, populated by JS. Overlays the entire page,
+     including the UI, since precipitation reads as being in front of
+     everything - but never intercepts clicks. */
+  #precip-layer {
+    position: fixed;
+    inset: 0;
+    z-index: 25;
+    overflow: hidden;
+    pointer-events: none;
+  }
+
+  .raindrop {
+    position: absolute;
+    top: -5vh;
+    width: 2px;
+    height: 18px;
+    background: linear-gradient(to bottom, rgba(255, 255, 255, 0), rgba(255, 255, 255, 0.65));
+    animation-name: fall-rain;
+    animation-timing-function: linear;
+    animation-iteration-count: infinite;
+  }
+
+  @keyframes fall-rain {
+    from { transform: translateY(0); }
+    to   { transform: translateY(115vh); }
+  }
+
+  .snowflake {
+    position: absolute;
+    top: -5vh;
+    border-radius: 50%;
+    background: rgba(255, 255, 255, 0.85);
+    animation-name: fall-snow;
+    animation-timing-function: linear;
+    animation-iteration-count: infinite;
+  }
+
+  @keyframes fall-snow {
+    0%   { transform: translate(0, 0); }
+    50%  { transform: translate(3vw, 55vh); }
+    100% { transform: translate(-3vw, 115vh); }
+  }
+
+  /* Depth-ordered footer layers, farthest to nearest, with the logo and
+     paw tucked into the stack (logo behind layer3, paw behind layer1)
+     instead of always floating on top.
+     "bottom" gaps are proportional to viewport width (vw); the script
+     below adjusts each --lN-vw coefficient as the window gets short.
+     z-indexes are spaced out (steps of 10) so JS can slot fog/storm clouds
+     in just above layer4/3/2 (see INTERLEAVED_CLOUD_Z in the script). */
+  #layer4       { bottom: calc(var(--l4-vw) * 1vw); z-index: 20; } /* skyline w/ clock tower */
+  #clemson-logo { z-index: 30; }                                   /* behind layer3 */
+  #layer3       { bottom: calc(var(--l3-vw) * 1vw); z-index: 40; } /* mid mountains */
+  #layer2       { bottom: calc(var(--l2-vw) * 1vw); z-index: 50; } /* near mountains + clouds */
+  #paw          { z-index: 60; }                                   /* behind layer1 */
+  #layer1       { bottom: calc(var(--l1-vw) * 1vw); z-index: 70; } /* foreground ridge */
+
+  .corner-mark {
+    position: absolute;
+    pointer-events: none;
+  }
+
+  #clemson-logo {
+    top: 4vh;
+    left: 2.4vw;
+    width: clamp(160px, 32vw, 620px);
+    height: auto;
+  }
+
+  #paw {
+    bottom: 5vh;
+    right: 2.5vw;
+    width: clamp(64px, 11vw, 210px);
+    height: auto;
+    /* .corner-mark sets pointer-events:none so the marks never swallow a
+       click meant for the page. The paw opts back in for its easter egg;
+       an id beats a class, so this wins without touching .corner-mark.
+       No cursor change on purpose - a pointer cursor on hover advertises
+       that there is something here to click, which is the one thing a
+       hidden egg shouldn't do. The arrow stays, the click still lands. */
+    pointer-events: auto;
+  }
+
+  /* Paw prints tracking across the scene. z-index 75 puts them in front
+     of layer1 (70), so they walk over the foreground ridge rather than
+     disappearing behind it. */
+  .paw-print {
+    position: fixed;
+    width: clamp(20px, 2.4vw, 38px);
+    height: auto;
+    z-index: 75;
+    opacity: 0;
+    pointer-events: none;
+    animation: paw-walk 2.6s ease-out forwards;
+  }
+
+  @keyframes paw-walk {
+    0%   { opacity: 0;    transform: translateY(10px) scale(0.65) rotate(var(--paw-rot, 0deg)); }
+    18%  { opacity: 0.95; transform: translateY(0)    scale(1)    rotate(var(--paw-rot, 0deg)); }
+    68%  { opacity: 0.95; }
+    100% { opacity: 0;    transform: translateY(-28px) scale(1)   rotate(var(--paw-rot, 0deg)); }
+  }
+
+  /* Orange wash sits at z-index 5: above the sky gradient, below every
+     layer (layer4 is 20) and below all the text. Tinting the sky reads as
+     atmosphere; tinting the bookmark cards would just look broken. */
+  body.orange-wash .scene::before {
+    content: '';
+    position: fixed;
+    inset: 0;
+    z-index: 5;
+    background: rgba(245, 102, 0, 0.16);
+    pointer-events: none;
+    transition: opacity 0.6s ease;
+  }
+
+  #gameday-mark {
+    position: fixed;
+    top: 27vh;
+    left: 50%;
+    transform: translateX(-50%);
+    z-index: 66;
+    font-family: system-ui, sans-serif;
+    font-size: clamp(0.75rem, 1.5vw, 1.1rem);
+    font-weight: 700;
+    letter-spacing: 0.42em;
+    text-indent: 0.42em; /* letter-spacing trails the last glyph; re-centre */
+    color: #F56600;
+    text-shadow: 0 1px 12px rgba(0, 0, 0, 0.5);
+    pointer-events: none;
+  }
+
+  /* Firefox WebExtensions can't focus/select the real address bar on a
+     new tab (a Mozilla platform limitation), so this page provides its
+     own focused search box instead. */
+  #search-form {
+    position: fixed;
+    top: 38vh;
+    left: 50%;
+    transform: translateX(-50%);
+    z-index: 20;
+    width: clamp(280px, 42vw, 580px);
+  }
+
+  #search-input {
+    width: 100%;
+    box-sizing: border-box;
+    padding: 14px 22px;
+    font-size: 1.05rem;
+    font-family: system-ui, sans-serif;
+    color: #fff;
+    background: rgba(255, 255, 255, 0.1);
+    border: 1px solid rgba(255, 255, 255, 0.3);
+    border-radius: 999px;
+    outline: none;
+    backdrop-filter: blur(6px);
+  }
+
+  #search-input::placeholder {
+    color: rgba(255, 255, 255, 0.65);
+  }
+
+  #search-input:focus {
+    border-color: #F56600;
+    background: rgba(255, 255, 255, 0.16);
+  }
+
+  /* Bookmarks section, populated by JS from bookmarks.json (see
+     loadBookmarks in the script below), grouped into one column per
+     category. Not live-synced with Firefox's real bookmarks - regular
+     webpages can't read the bookmarks API, only extension code can - so
+     this is a manually-maintained stand-in list.
+     Lives inside .scene (not fixed's default containing block - the
+     viewport - since .scene has no transform/filter to change that) so
+     its z-index compares directly against the mountain layers: 65 sits
+     between paw (60) and layer1 (70), so on short windows layer1's
+     jagged silhouette visually sinks over the bottom of the card. */
+  #bookmarks-section {
+    position: fixed;
+    top: 47vh;
+    left: 50%;
+    transform: translateX(-50%);
+    z-index: 65;
+    width: clamp(320px, 70vw, 900px);
+    display: flex;
+    flex-wrap: wrap;
+    justify-content: center;
+    align-items: flex-start;
+    gap: 18px;
+  }
+
+  .bookmark-category {
+    display: flex;
+    flex-direction: column;
+    gap: 9px;
+    flex: 1 1 0;
+    min-width: 150px;
+    padding: 16px 22px;
+    background: rgba(255, 255, 255, 0.1);
+    border: 1px solid rgba(255, 255, 255, 0.3);
+    border-radius: 16px;
+    backdrop-filter: blur(6px);
+    box-sizing: border-box;
+    overflow-anchor: none;
+  }
+
+  /* On very narrow screens, stack the categories into one column with a
+     single shared scroll instead of side-by-side cards that each scroll
+     independently - NARROW_WIDTH_PX in the script below must match this
+     600px breakpoint. */
+  @media (max-width: 600px) {
+    #bookmarks-section {
+      flex-direction: column;
+      flex-wrap: nowrap;
+      align-items: stretch;
+      /* Not "center" (the base rule's value): when a flex container's
+         content overflows and justify-content centers it, the overflow
+         is split evenly above and below the box - but scrollTop can't go
+         negative, so whatever spills above the top edge becomes
+         permanently clipped and unreachable. flex-start keeps everything
+         anchored at the top, so overflow only ever happens at the
+         bottom, where scrolling can actually reach it. */
+      justify-content: flex-start;
+      overflow-y: auto;
+      overflow-anchor: none;
+      overflow-x: hidden;
+    }
+
+    .bookmark-category {
+      max-height: none !important;
+      overflow-y: visible !important;
+    }
+  }
+
+  .bookmark-category-title {
+    margin: 0 0 3px;
+    font-family: system-ui, sans-serif;
+    font-size: 1.15rem;
+    font-weight: 700;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    text-align: center;
+    color: #ffb27a;
+  }
+
+  .bookmark-link {
+    display: flex;
+    align-items: center;
+    gap: 9px;
+    color: #fff;
+    text-decoration: none;
+    font-family: system-ui, sans-serif;
+    font-size: 1.05rem;
+    opacity: 0.9;
+    transition: opacity 0.15s ease;
+  }
+
+  .bookmark-link:hover {
+    opacity: 1;
+    text-decoration: underline;
+  }
+
+  .bookmark-icon {
+    width: 18px;
+    height: 18px;
+    border-radius: 4px;
+    flex-shrink: 0;
+    background: #fff;
+    padding: 2px;
+    box-sizing: border-box;
+  }
+
+  /* Speedkey badge - Alt+<key> activates the link (see the keydown handler
+     in the script below). margin-left:auto pushes every badge to the card's
+     right edge so they line up in a column regardless of label length.
+     aria-hidden because the shortcut is already announced properly through
+     the link's aria-keyshortcuts attribute; the badge is the visual echo. */
+  .bookmark-key {
+    margin-left: auto;
+    flex-shrink: 0;
+    padding: 1px 6px;
+    font-size: 0.72rem;
+    font-weight: 600;
+    text-transform: uppercase;
+    line-height: 1.5;
+    color: rgba(255, 255, 255, 0.75);
+    background: rgba(255, 255, 255, 0.14);
+    border: 1px solid rgba(255, 255, 255, 0.28);
+    border-radius: 5px;
+  }
+
+  #weather-widget {
+    position: fixed;
+    top: 4vh;
+    right: 2.5vw;
+    z-index: 20;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 10px 18px;
+    font-family: system-ui, sans-serif;
+    font-size: 1rem;
+    color: #fff;
+    white-space: nowrap;
+    background: rgba(255, 255, 255, 0.1);
+    border: 1px solid rgba(255, 255, 255, 0.3);
+    border-radius: 999px;
+    backdrop-filter: blur(6px);
+    opacity: 0;
+    transition: opacity 0.6s ease;
+  }
+
+  #weather-widget.visible {
+    opacity: 1;
+  }
+
+
+  /* Bookmark editor overlay. z-index 90 - above the settings panel (80)
+     that launches it. Editing needs far more room than the panel has, so
+     this is a centred dialog rather than another group in the list. */
+  #bookmark-editor {
+    position: fixed;
+    inset: 0;
+    z-index: 90;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    background: rgba(10, 6, 24, 0.55);
+    backdrop-filter: blur(3px);
+  }
+
+  #bookmark-editor[hidden] {
+    display: none;
+  }
+
+  #bookmark-editor-card {
+    display: flex;
+    flex-direction: column;
+    width: min(700px, 92vw);
+    max-height: 84vh;
+    padding: 20px 22px;
+    font-family: system-ui, sans-serif;
+    color: #fff;
+    background: rgba(24, 15, 48, 0.95);
+    border: 1px solid rgba(255, 255, 255, 0.3);
+    border-radius: 16px;
+    backdrop-filter: blur(10px);
+  }
+
+  #bookmark-editor-title {
+    margin-bottom: 13px;
+    font-size: 0.7rem;
+    letter-spacing: 0.09em;
+    text-transform: uppercase;
+    color: rgba(255, 255, 255, 0.65);
+  }
+
+  #bookmark-editor-body {
+    flex: 1 1 auto;
+    overflow-y: auto;
+    scrollbar-width: thin;
+    scrollbar-color: rgba(255, 255, 255, 0.28) transparent;
+  }
+
+  .bm-category {
+    margin-bottom: 12px;
+    padding: 11px 12px;
+    background: rgba(255, 255, 255, 0.06);
+    border: 1px solid rgba(255, 255, 255, 0.16);
+    border-radius: 12px;
+  }
+
+  .bm-row {
+    display: flex;
+    align-items: center;
+    gap: 7px;
+    margin-bottom: 7px;
+  }
+
+  .bm-row:last-child {
+    margin-bottom: 0;
+  }
+
+  .bm-row input {
+    min-width: 0;
+    padding: 6px 9px;
+    font-family: system-ui, sans-serif;
+    font-size: 0.85rem;
+    color: #fff;
+    background: rgba(255, 255, 255, 0.1);
+    border: 1px solid rgba(255, 255, 255, 0.25);
+    border-radius: 7px;
+    outline: none;
+  }
+
+  .bm-row input:focus {
+    border-color: #F56600;
+  }
+
+  .bm-row input::placeholder {
+    color: rgba(255, 255, 255, 0.4);
+  }
+
+  .bm-cat-name {
+    flex: 1 1 auto;
+    font-weight: 600;
+  }
+
+  .bm-title {
+    flex: 0 0 28%;
+  }
+
+  .bm-url {
+    flex: 1 1 auto;
+  }
+
+  .bm-key {
+    flex: 0 0 2.4rem;
+    text-align: center;
+    text-transform: uppercase;
+  }
+
+  /* Two links sharing a key would leave one of them permanently
+     unreachable, so the save path blocks on it - flag both offenders
+     instead of failing silently at save time. */
+  .bm-key.dupe,
+  .bm-key.dupe:focus {
+    border-color: #ff6b6b;
+  }
+
+  .bm-btn {
+    flex: 0 0 auto;
+    padding: 6px 10px;
+    font-family: system-ui, sans-serif;
+    font-size: 0.8rem;
+    color: rgba(255, 255, 255, 0.75);
+    background: rgba(255, 255, 255, 0.08);
+    border: 1px solid rgba(255, 255, 255, 0.22);
+    border-radius: 7px;
+    cursor: pointer;
+    transition: background 0.2s ease, color 0.2s ease, border-color 0.2s ease;
+  }
+
+  .bm-btn:hover {
+    background: rgba(255, 255, 255, 0.16);
+    color: #fff;
+  }
+
+  .bm-btn.danger:hover {
+    border-color: #F56600;
+    color: #F56600;
+  }
+
+  .bm-btn.move {
+    padding: 6px 8px;
+    line-height: 1;
+  }
+
+  .bm-btn:disabled {
+    opacity: 0.3;
+    cursor: default;
+  }
+
+  /* Disabled arrows must not light up under the pointer. */
+  .bm-btn:disabled:hover {
+    color: rgba(255, 255, 255, 0.75);
+    background: rgba(255, 255, 255, 0.08);
+    border-color: rgba(255, 255, 255, 0.22);
+  }
+
+  /* Reset confirms in place; this is the armed state. */
+  .bm-btn.armed {
+    color: #F56600;
+    border-color: #F56600;
+  }
+
+  .bm-btn.primary {
+    color: #fff;
+    background: #F56600;
+    border-color: #F56600;
+  }
+
+  .bm-btn.primary:hover {
+    background: #ff7a1f;
+  }
+
+  #bookmark-editor-add-category {
+    align-self: flex-start;
+    margin-top: 2px;
+  }
+
+  #bookmark-editor-actions {
+    display: flex;
+    align-items: center;
+    gap: 9px;
+    margin-top: 14px;
+  }
+
+  #bookmark-editor-status {
+    flex: 1 1 auto;
+    font-size: 0.78rem;
+    color: rgba(255, 255, 255, 0.6);
+  }
+
+  /* Settings gear, bottom-left corner. Bottom-*right* is where the paw
+     mark sits, and a panel opening over it is unreadable however it's
+     styled, so the whole control lives on the left instead.
+     z-index 80 puts it above every mountain layer. .scene has no
+     transform/filter/opacity, so it establishes no stacking context and
+     its children's z-indexes compete directly with everything else on the
+     page (the same reasoning the #bookmarks-section comment relies on).
+     That means clearing the tallest of them, layer1's foreground ridge at
+     70, which spans the full width and would otherwise cover the gear.
+     Deliberately near-invisible at rest so it doesn't compete with the
+     artwork; the glass pill only materializes on hover/focus. */
+  #settings-toggle {
+    position: fixed;
+    bottom: 4vh;
+    left: 2.5vw;
+    z-index: 80;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 38px;
+    height: 38px;
+    padding: 0;
+    color: #fff;
+    background: rgba(255, 255, 255, 0);
+    border: 1px solid rgba(255, 255, 255, 0);
+    border-radius: 999px;
+    cursor: pointer;
+    opacity: 0.35;
+    backdrop-filter: blur(6px);
+    transition: opacity 0.3s ease, background 0.3s ease, border-color 0.3s ease;
+  }
+
+  #settings-toggle:hover,
+  #settings-toggle:focus-visible,
+  #settings-toggle.open {
+    opacity: 1;
+    background: rgba(255, 255, 255, 0.1);
+    border-color: rgba(255, 255, 255, 0.3);
+    outline: none;
+  }
+
+  #settings-toggle svg {
+    width: 19px;
+    height: 19px;
+    display: block;
+    transition: transform 0.5s ease;
+  }
+
+  /* An eighth-turn on hover - half a gear tooth, in the same spirit as
+     the rest of the page's reactive motion. */
+  #settings-toggle:hover svg,
+  #settings-toggle.open svg {
+    transform: rotate(45deg);
+  }
+
+  /* Panel opens upward from the gear, sharing .bookmark-category's 16px
+     radius rather than the 999px pill radius of the search box and weather
+     widget - it's a card, not a control.
+     Over on the left the backdrop is just the foreground ridge - a flat
+     dark silhouette at every time of day - so this keeps the same
+     translucent white glass as the rest of the page rather than needing
+     an opaque scrim to stay legible. */
+  #settings-panel {
+    position: fixed;
+    bottom: calc(4vh + 50px);
+    left: 2.5vw;
+    z-index: 80;
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    align-content: start;
+    gap: 13px 18px;
+    width: min(430px, 92vw);
+    padding: 15px 17px 14px;
+    font-family: system-ui, sans-serif;
+    color: #fff;
+    /* Grow to whatever room is left between the gear and the top of the
+       window rather than a fixed cap, so the whole list fits on a normal
+       window and only scrolls on genuinely short ones. The panel's own
+       bottom offset (4vh + 50px) plus a small margin is what's subtracted. */
+    max-height: calc(96vh - 70px);
+    overflow-y: auto;
+    /* Firefox's default scrollbar is an opaque light slab against this
+       dark panel; thin + translucent keeps it from reading as a seam. */
+    scrollbar-width: thin;
+    scrollbar-color: rgba(255, 255, 255, 0.28) transparent;
+    background: rgba(24, 15, 48, 0.55);
+    border: 1px solid rgba(255, 255, 255, 0.3);
+    border-radius: 16px;
+    backdrop-filter: blur(8px);
+    opacity: 0;
+    transform: translateY(6px);
+    pointer-events: none;
+    transition: opacity 0.25s ease, transform 0.25s ease;
+  }
+
+  #settings-panel.visible {
+    opacity: 1;
+    transform: translateY(0);
+    pointer-events: auto;
+  }
+
+  .settings-input {
+    width: 100%;
+    box-sizing: border-box;
+    margin-top: 7px;
+    padding: 7px 10px;
+    font-family: system-ui, sans-serif;
+    font-size: 0.85rem;
+    color: #fff;
+    background: rgba(255, 255, 255, 0.1);
+    border: 1px solid rgba(255, 255, 255, 0.3);
+    border-radius: 8px;
+    outline: none;
+  }
+
+  .settings-input:focus {
+    border-color: #F56600;
+  }
+
+  .settings-input::placeholder {
+    color: rgba(255, 255, 255, 0.45);
+  }
+
+  .settings-extra.disabled {
+    opacity: 0.4;
+  }
+
+  .settings-status {
+    margin-top: 5px;
+    font-size: 0.73rem;
+    color: rgba(255, 255, 255, 0.6);
+  }
+
+  @media (max-width: 560px) {
+    #settings-panel {
+      grid-template-columns: minmax(0, 1fr);
+    }
+  }
+
+  .settings-group-label {
+    margin-bottom: 9px;
+    font-size: 0.7rem;
+    letter-spacing: 0.09em;
+    text-transform: uppercase;
+    color: rgba(255, 255, 255, 0.65);
+  }
+
+  .settings-option {
+    display: flex;
+    align-items: center;
+    gap: 9px;
+    padding: 5px 6px;
+    border-radius: 8px;
+    font-size: 0.92rem;
+    color: rgba(255, 255, 255, 0.72);
+    cursor: pointer;
+    transition: background 0.2s ease, color 0.2s ease;
+  }
+
+  .settings-option:hover {
+    background: rgba(255, 255, 255, 0.1);
+    color: #fff;
+  }
+
+  /* Real radio inputs, visually hidden rather than display:none, so the
+     group keeps its native keyboard behaviour (arrow keys move between
+     engines). Absolutely positioned against #settings-panel, where they
+     stack invisibly in the corner. */
+  .settings-option input {
+    position: absolute;
+    opacity: 0;
+    pointer-events: none;
+  }
+
+  .settings-dot {
+    width: 11px;
+    height: 11px;
+    flex-shrink: 0;
+    border: 1px solid rgba(255, 255, 255, 0.45);
+    border-radius: 999px;
+    transition: border-color 0.2s ease, box-shadow 0.2s ease;
+  }
+
+  .settings-option:has(input:checked) {
+    color: #fff;
+  }
+
+  .settings-option:has(input:checked) .settings-dot {
+    border-color: #F56600;
+    box-shadow: inset 0 0 0 3px #F56600;
+  }
+
+  /* Keyboard focus still needs to read visibly even though the input
+     itself is hidden. */
+  .settings-option:has(input:focus-visible) {
+    background: rgba(255, 255, 255, 0.14);
+    color: #fff;
+  }
