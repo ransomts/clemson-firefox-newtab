@@ -1,0 +1,257 @@
+#!/usr/bin/env python3
+"""Regenerate the inline star catalog and constellation figures in app.js.
+
+Reads the Yale Bright Star Catalogue (BSC5, CDS V/50) - fetched from the
+Harvard mirror unless --source points at a local bsc5.dat or .dat.gz -
+keeps every star up to the magnitude limit, sorts them brightest first,
+packs each one into nine base-36 characters and writes the result
+between the STAR_CATALOG_BEGIN / STAR_CATALOG_END markers in app.js,
+together with the proper names of the famous ones keyed by index.
+
+The constellation figures come from d3-celestial's constellations.lines.json
+(Olaf Frohn, BSD-3; fetched from GitHub unless --lines-source is a local
+copy): one polyline set per constellation, packed as six base-36
+characters per vertex (RA and Dec+90 in hundredths of a degree), '|'
+between polylines and ';' between constellations, each prefixed with its
+three-letter IAU abbreviation and a colon. The names and label positions
+come from its constellations.json, index-aligned with the figures, as
+"And:Andromeda:v" entries with one packed vertex each.
+
+The page decodes the string at night (decodeStarCatalog in app.js), so
+the packing here and the decoding there have to agree:
+
+    RA          3 chars   hundredths of a degree, 0-36000
+    Dec + 90    3 chars   hundredths of a degree, 0-18000
+    Vmag + 2    2 chars   twentieths of a magnitude, so -2.0 .. +5.5 fits
+    B-V + 1     1 char    tenths, clamped to -1.0 .. +2.5
+
+Inlining rather than fetching keeps the catalog inside the one immutable,
+bytecode-cached app.js the server already stamps, so a night tab costs
+no extra request. ~1600 stars pack to ~15KB.
+
+    scripts/firefox-newtab-stars                     # mag 5.0, fetch both
+    scripts/firefox-newtab-stars --mag 4.5
+    scripts/firefox-newtab-stars --source ~/Downloads/bsc5.dat.gz \
+        --lines-source ~/Downloads/constellations.lines.json \
+        --names-source ~/Downloads/constellations.json
+"""
+import argparse
+import gzip
+import json
+import pathlib
+import re
+import sys
+import urllib.request
+
+BSC5_URL = 'http://tdc-www.harvard.edu/catalogs/bsc5.dat.gz'
+LINES_URL = 'https://raw.githubusercontent.com/ofrohn/d3-celestial/master/data/constellations.lines.json'
+NAMES_URL = 'https://raw.githubusercontent.com/ofrohn/d3-celestial/master/data/constellations.json'
+ROOT = pathlib.Path(__file__).resolve().parent.parent
+APP_JS = ROOT / 'app.js'
+BEGIN = '    // STAR_CATALOG_BEGIN'
+END = '    // STAR_CATALOG_END'
+
+# IAU proper names keyed by BSC5's Bayer designation ("Alp CMa"). A name
+# goes to the brightest matching entry only, so double stars listed as
+# two rows (Alp1/Alp2 Cen) don't both claim it.
+PROPER_NAMES = {
+    'Alp CMa': 'Sirius', 'Alp Car': 'Canopus', 'Alp Boo': 'Arcturus',
+    'Alp Cen': 'Rigil Kentaurus', 'Alp Lyr': 'Vega', 'Alp Aur': 'Capella',
+    'Bet Ori': 'Rigel', 'Alp CMi': 'Procyon', 'Alp Eri': 'Achernar',
+    'Alp Ori': 'Betelgeuse', 'Bet Cen': 'Hadar', 'Alp Aql': 'Altair',
+    'Alp Cru': 'Acrux', 'Alp Tau': 'Aldebaran', 'Alp Sco': 'Antares',
+    'Alp Vir': 'Spica', 'Bet Gem': 'Pollux', 'Alp PsA': 'Fomalhaut',
+    'Alp Cyg': 'Deneb', 'Bet Cru': 'Mimosa', 'Alp Leo': 'Regulus',
+    'Eps CMa': 'Adhara', 'Alp Gem': 'Castor', 'Gam Cru': 'Gacrux',
+    'Lam Sco': 'Shaula', 'Gam Ori': 'Bellatrix', 'Bet Tau': 'Elnath',
+    'Bet Car': 'Miaplacidus', 'Eps Ori': 'Alnilam', 'Alp Gru': 'Alnair',
+    'Zet Ori': 'Alnitak', 'Eps UMa': 'Alioth', 'Alp Per': 'Mirfak',
+    'Eps Sgr': 'Kaus Australis', 'Del CMa': 'Wezen', 'Eta UMa': 'Alkaid',
+    'The Sco': 'Sargas', 'Bet Aur': 'Menkalinan', 'Alp TrA': 'Atria',
+    'Gam Gem': 'Alhena', 'Alp Pav': 'Peacock', 'Bet CMa': 'Mirzam',
+    'Alp UMa': 'Dubhe', 'Alp Hya': 'Alphard', 'Alp Ari': 'Hamal',
+    'Sig Sgr': 'Nunki', 'Bet Cet': 'Diphda', 'Alp UMi': 'Polaris',
+    'Bet UMa': 'Merak', 'Gam UMa': 'Phecda', 'Del UMa': 'Megrez',
+    'Zet UMa': 'Mizar', 'Del Ori': 'Mintaka', 'Kap Ori': 'Saiph',
+    'Alp And': 'Alpheratz', 'Bet Per': 'Algol', 'Alp Oph': 'Rasalhague',
+    'Alp CrB': 'Alphecca', 'Bet UMi': 'Kochab', 'Gam Leo': 'Algieba',
+    'Bet Leo': 'Denebola', 'Alp Cas': 'Schedar', 'Bet Cas': 'Caph',
+    'Alp Peg': 'Markab', 'Eps Peg': 'Enif', 'Bet Peg': 'Scheat',
+    'Gam Peg': 'Algenib', 'Alp Cet': 'Menkar', 'Alp Phe': 'Ankaa',
+    'Gam Dra': 'Eltanin', 'Alp Her': 'Rasalgethi', 'Bet Cyg': 'Albireo',
+    'Gam Cyg': 'Sadr', 'Eps Cyg': 'Aljanah', 'Del Sco': 'Dschubba',
+    'Bet Sco': 'Acrab', 'Alp Lib': 'Zubenelgenubi', 'Bet Lib': 'Zubeneschamali',
+    'Zet Pup': 'Naos', 'Alp Aqr': 'Sadalmelik', 'Bet Aqr': 'Sadalsuud',
+    'Alp Cap': 'Algedi', 'Del Cap': 'Deneb Algedi', 'Eta Oph': 'Sabik',
+    'Bet Oph': 'Cebalrai', 'Del Oph': 'Yed Prior', 'Eps Oph': 'Yed Posterior',
+    'Alp Ser': 'Unukalhai', 'Eps Boo': 'Izar', 'Eta Boo': 'Muphrid',
+    'Alp CVn': 'Cor Caroli', 'Zet Sgr': 'Ascella', 'Del Sgr': 'Kaus Media',
+    'Lam Sgr': 'Kaus Borealis', 'Gam Sgr': 'Alnasl', 'Gam Aql': 'Tarazed',
+    'Bet Aql': 'Alshain', 'Eps Tau': 'Ain', 'Eta Tau': 'Alcyone',
+    'Alp Col': 'Phact', 'Bet Col': 'Wazn', 'Alp Lep': 'Arneb', 'Bet Lep': 'Nihal',
+    'Gam Crv': 'Gienah', 'Del Crv': 'Algorab', 'Bet Crv': 'Kraz',
+    'Eps Vir': 'Vindemiatrix', 'Gam Vir': 'Porrima', 'Alp Cep': 'Alderamin',
+    'Bet Cep': 'Alfirk', 'Gam Cep': 'Errai', 'Bet Dra': 'Rastaban',
+    'Alp Dra': 'Thuban', 'Del Cas': 'Ruchbah', 'Eps Cas': 'Segin',
+    'Bet And': 'Mirach', 'Gam And': 'Almach', 'Bet Ari': 'Sheratan',
+    'Del Leo': 'Zosma', 'Eps Car': 'Avior', 'Iot Car': 'Aspidiske',
+    'Alp Psc': 'Alrescha', 'Alp Equ': 'Kitalpha', 'Bet Her': 'Kornephoros',
+    'Bet Cnc': 'Tarf', 'Alp Cnc': 'Acubens', 'Alp Crt': 'Alkes', 'Alp Vul': 'Anser',
+}
+
+# Sanity anchors: HR number -> (RA deg, Dec deg, Vmag). If the fixed-width
+# columns ever shift these will be wildly off.
+ANCHORS = {
+    2491: (101.287, -16.716, -1.46),   # Sirius
+    7001: (279.234, 38.784, 0.03),     # Vega
+    5340: (213.915, 19.182, -0.04),    # Arcturus
+}
+
+DIGITS = '0123456789abcdefghijklmnopqrstuvwxyz'
+
+
+def base36(n, width):
+    n = int(round(n))
+    if n < 0 or n >= 36 ** width:
+        raise ValueError(f'{n} does not fit in {width} base-36 digits')
+    out = ''
+    while n:
+        out = DIGITS[n % 36] + out
+        n //= 36
+    return out.rjust(width, '0')
+
+
+def parse_bsc5(text):
+    """Yield one dict per usable row of bsc5.dat (CDS V/50 byte layout)."""
+    for line in text.splitlines():
+        line = line.ljust(120)
+        if not line[75:77].strip():
+            continue  # no J2000 position: a nova, a cluster, a misprint
+        try:
+            ra = (int(line[75:77]) + int(line[77:79]) / 60 + float(line[79:83]) / 3600) * 15
+            dec = int(line[84:86]) + int(line[86:88]) / 60 + int(line[88:90]) / 3600
+            if line[83] == '-':
+                dec = -dec
+            vmag = float(line[102:107])
+        except ValueError:
+            continue
+        bv_text = line[109:114].strip()
+        bv = float(bv_text) if bv_text else 0.6  # unknown colour: treat as white
+        name = line[4:14]
+        bayer, con = name[3:6].strip(), name[7:10].strip()
+        yield {
+            'hr': int(line[0:4]),
+            'ra': ra, 'dec': dec, 'mag': vmag, 'bv': bv,
+            'key': f'{bayer} {con}' if bayer and con else None,
+        }
+
+
+def load_source(source, url, encoding):
+    if source:
+        path = pathlib.Path(source).expanduser()
+        raw = path.read_bytes()
+        print(f'read {path}', file=sys.stderr)
+    else:
+        print(f'fetching {url}', file=sys.stderr)
+        with urllib.request.urlopen(url, timeout=60) as resp:
+            raw = resp.read()
+    if raw[:2] == b'\x1f\x8b':
+        raw = gzip.decompress(raw)
+    return raw.decode(encoding)
+
+
+def pack_vertex(ra, dec):
+    return base36((ra % 360) * 100, 3) + base36((dec + 90) * 100, 3)
+
+
+def pack_constellations(geojson):
+    """'And:v1v2v3|v4v5;Ant:...' - see the module docstring."""
+    entries = []
+    ids = []
+    vertices = 0
+    for feature in geojson['features']:
+        polylines = []
+        for line in feature['geometry']['coordinates']:
+            polylines.append(''.join(pack_vertex(ra, dec) for ra, dec in line))
+            vertices += len(line)
+        entries.append(f"{feature['id']}:" + '|'.join(polylines))
+        ids.append(feature['id'])
+    return ';'.join(entries), ids, vertices
+
+
+def pack_names(geojson, line_ids):
+    """'And:Andromeda:v;Ant:Antlia:v;...' - one label point per figure,
+    in the same order as the figures (Serpens appears twice in both)."""
+    entries = []
+    for i, feature in enumerate(geojson['features']):
+        if feature['id'] != line_ids[i]:
+            sys.exit(f"constellations.json entry {i} is {feature['id']}, lines file has {line_ids[i]}")
+        name = feature['properties']['name']
+        if any(ch in name for ch in ":;'\\"):
+            sys.exit(f'constellation name {name!r} would break the packing')
+        ra, dec = feature['geometry']['coordinates']
+        entries.append(f"{feature['id']}:{name}:{pack_vertex(ra, dec)}")
+    return ';'.join(entries)
+
+
+def main():
+    ap = argparse.ArgumentParser(description=__doc__.split('\n')[0])
+    ap.add_argument('--mag', type=float, default=5.0, help='faintest V magnitude to keep (default 5.0)')
+    ap.add_argument('--source', help='local bsc5.dat or bsc5.dat.gz instead of fetching')
+    ap.add_argument('--lines-source', help='local constellations.lines.json instead of fetching')
+    ap.add_argument('--names-source', help='local constellations.json instead of fetching')
+    ap.add_argument('--app', default=str(APP_JS), help='app.js to rewrite')
+    args = ap.parse_args()
+
+    # BSC5 is a 1991 fixed-width file in Latin-1; the d3-celestial JSON is UTF-8.
+    stars = list(parse_bsc5(load_source(args.source, BSC5_URL, 'latin-1')))
+    lines, line_ids, n_vert = pack_constellations(json.loads(load_source(args.lines_source, LINES_URL, 'utf-8')))
+    names_packed = pack_names(json.loads(load_source(args.names_source, NAMES_URL, 'utf-8')), line_ids)
+    n_con = len(line_ids)
+    by_hr = {s['hr']: s for s in stars}
+    for hr, (ra, dec, mag) in ANCHORS.items():
+        s = by_hr[hr]
+        if abs(s['ra'] - ra) > 0.01 or abs(s['dec'] - dec) > 0.01 or abs(s['mag'] - mag) > 0.01:
+            sys.exit(f'HR {hr} parsed as {s}, expected {(ra, dec, mag)} - column layout changed?')
+
+    kept = sorted((s for s in stars if s['mag'] <= args.mag), key=lambda s: s['mag'])
+    names = {}
+    unclaimed = dict(PROPER_NAMES)
+    packed = []
+    for i, s in enumerate(kept):
+        packed.append(
+            base36(s['ra'] * 100, 3)
+            + base36((s['dec'] + 90) * 100, 3)
+            + base36((s['mag'] + 2) * 20, 2)
+            + base36((max(-1.0, min(2.5, s['bv'])) + 1) * 10, 1)
+        )
+        if s['key'] in unclaimed:
+            names[i] = unclaimed.pop(s['key'])
+    catalog = ''.join(packed)
+
+    block = '\n'.join([
+        BEGIN + ' - generated by scripts/firefox-newtab-stars, do not edit by hand.',
+        f'    // Yale Bright Star Catalogue (BSC5) to V magnitude {args.mag:g}: {len(kept)} stars,',
+        f'    // brightest first, {len(names)} of them with IAU proper names.',
+        f"    const STAR_CATALOG = '{catalog}';",
+        '    const STAR_NAMES = {' + ', '.join(f"{i}: '{n}'" for i, n in names.items()) + '};',
+        f'    // Constellation figures from d3-celestial: {n_con} constellations, {n_vert} vertices.',
+        f"    const CONSTELLATION_LINES = '{lines}';",
+        f"    const CONSTELLATION_NAMES = '{names_packed}';",
+        END,
+    ])
+
+    app = pathlib.Path(args.app)
+    text = app.read_text(encoding='utf-8')
+    pattern = re.compile(re.escape(BEGIN) + r'.*?' + re.escape(END), re.S)
+    if not pattern.search(text):
+        sys.exit(f'{app} has no STAR_CATALOG_BEGIN/END markers')
+    app.write_text(pattern.sub(lambda m: block, text, count=1), encoding='utf-8')
+    print(f'{len(kept)} stars to mag {args.mag:g} ({len(catalog)} chars), {len(names)} named, '
+          f'{n_con} constellation figures ({len(lines)} chars) -> {app}', file=sys.stderr)
+    if unclaimed and args.mag >= 5:
+        print('names with no catalog match:', ', '.join(sorted(unclaimed)), file=sys.stderr)
+
+
+if __name__ == '__main__':
+    main()

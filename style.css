@@ -13,6 +13,10 @@
     --l1-vw: 0.47;
     /* Set by the script below once weather data loads. */
     --weather-tint: rgba(0, 0, 0, 0);
+    /* 0 by day, up to 1 at night; updateNightSky() derives it from the sky
+       keyframes and the weather. 0 here means a daytime tab never even
+       builds the star field (see ensureNightSky). */
+    --star-opacity: 0;
   }
 
   html, body {
@@ -154,6 +158,152 @@
     0%   { transform: translate(0, 0); }
     50%  { transform: translate(3vw, 55vh); }
     100% { transform: translate(-3vw, 115vh); }
+  }
+
+  /* Night sky: a star field and a moon that fade in after sunset and out
+     before sunrise. Both are created by JS (ensureNightSky) the first time
+     --star-opacity is non-zero, so a daytime tab pays nothing for them.
+     z-index 3/4 puts them above the sky gradient and weather tint (0) but
+     under the gameday orange wash (5), every drifting cloud (10+) and the
+     mountains (20+), so clouds and ridges still pass in front. The 4s
+     opacity transition matches the weather tint, not the sky's 60s drift:
+     a cloud bank rolling in should hide the stars as fast as it appears. */
+  #star-field {
+    position: absolute;
+    inset: 0;
+    z-index: 3;
+    opacity: var(--star-opacity);
+    transition: opacity 4s ease;
+    pointer-events: none;
+  }
+
+  .star {
+    position: absolute;
+    border-radius: 50%;
+    background: #fff; /* tinted inline per star from its colour index */
+    opacity: var(--star-base, 0.8);
+    transform: translate(-50%, -50%);
+  }
+
+  /* First-magnitude stars get a soft halo, second and third a faint
+     one; the rest are single pixels. */
+  .star.bright {
+    box-shadow: 0 0 4px 1px rgba(255, 255, 255, 0.45);
+  }
+
+  .star.mid {
+    box-shadow: 0 0 2px 0.5px rgba(255, 255, 255, 0.3);
+  }
+
+  /* Stars with a proper name carry it as a tooltip, so they alone opt
+     back into pointer events (the field itself ignores the pointer). */
+  .star.named {
+    pointer-events: auto;
+  }
+
+  /* Only a subset of stars twinkle (JS picks them), with their own period
+     and phase, so the field shimmers rather than pulsing in unison. */
+  .star.twinkle {
+    animation: twinkle var(--twinkle-dur, 4s) ease-in-out infinite;
+  }
+
+  @keyframes twinkle {
+    0%, 100% { opacity: var(--star-base, 0.8);               transform: translate(-50%, -50%) scale(1); }
+    50%      { opacity: calc(var(--star-base, 0.8) * 0.25);  transform: translate(-50%, -50%) scale(0.8); }
+  }
+
+  /* Constellation figures: one <path> per constellation, redrawn by
+     layoutSky() along with the stars. Inside #star-field so they share
+     its opacity and weather dimming, and its first child so the stars
+     paint on top of the lines. */
+  #constellation-lines {
+    position: absolute;
+    inset: 0;
+    width: 100%;
+    height: 100%;
+    overflow: visible;
+  }
+
+  #constellation-lines path {
+    fill: none;
+    stroke: rgba(190, 205, 255, 0.25);
+    stroke-width: 1;
+    stroke-linecap: round;
+    stroke-linejoin: round;
+  }
+
+  /* Constellation names, optional. paint-order puts the dark stroke
+     under the fill, a halo that keeps the name legible where it crosses
+     a line or a bright star. */
+  #constellation-lines text {
+    fill: rgba(205, 214, 255, 0.5);
+    font: 500 11px/1 system-ui, sans-serif;
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+    paint-order: stroke;
+    stroke: rgba(15, 10, 36, 0.7);
+    stroke-width: 3px;
+    stroke-linejoin: round;
+  }
+
+  /* Once the sky is fully light the field is kept for the next dusk but
+     paused, so nothing animates while invisible. */
+  #star-field.dormant .star {
+    animation-play-state: paused;
+  }
+
+  /* A streak with its bright head at the right end. The rotation is
+     pivoted on that head and the travel happens along the rotated axis,
+     so one angle sets both which way it points and which way it flies.
+     Lives inside #star-field, so it inherits the weather dimming. */
+  .shooting-star {
+    position: absolute;
+    width: 120px;
+    height: 2px;
+    border-radius: 2px;
+    background: linear-gradient(to left, rgba(255, 255, 255, 0.95), rgba(255, 255, 255, 0));
+    transform-origin: right center;
+    animation: shoot 0.9s ease-out forwards;
+  }
+
+  @keyframes shoot {
+    0%   { transform: rotate(var(--shoot-angle, 30deg)) translateX(0);                       opacity: 0; }
+    12%  {                                                                                    opacity: 1; }
+    100% { transform: rotate(var(--shoot-angle, 30deg)) translateX(var(--shoot-dist, 40vw)); opacity: 0; }
+  }
+
+  /* The moon is positioned by transform (not left/top) so its slow drift
+     across the night is a compositor-side transition and never a reflow.
+     --moon-x/--moon-y are pixel coordinates of its centre, set by
+     layoutSky() from its real position in the sky. It opts back into
+     pointer events, like the paw, for its phase tooltip. */
+  #moon {
+    position: absolute;
+    top: 0;
+    left: 0;
+    z-index: 4;
+    width: clamp(30px, 3.4vw, 60px);
+    opacity: var(--star-opacity);
+    transform: translate(calc(var(--moon-x, 0) * 1px - 50%), calc(var(--moon-y, 0) * 1px - 50%));
+    transition: opacity 4s ease, transform 60s linear;
+    filter: drop-shadow(0 0 8px rgba(255, 236, 190, 0.35));
+    pointer-events: auto;
+  }
+
+  #moon svg {
+    display: block;
+    width: 100%;
+    height: auto;
+  }
+
+  /* Same idea as .scene.demo-fast-sky itself: keep up with the demo. */
+  .scene.demo-fast-sky #star-field,
+  .scene.demo-fast-sky #moon {
+    transition-duration: 0.15s;
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .star.twinkle { animation: none; }
   }
 
   /* Depth-ordered footer layers, farthest to nearest, with the logo and

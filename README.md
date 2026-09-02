@@ -2,7 +2,9 @@
 
 A fully custom Firefox "new tab" page: an animated Clemson-themed skyline
 wallpaper that reacts to window size, cycles sky color with real
-sunrise/sunset times, layers in live weather effects (Open-Meteo), and shows
+sunrise/sunset times, layers in live weather effects (Open-Meteo), shows the
+real night sky for your location after dark (the Yale Bright Star Catalogue,
+the moon at its true position and phase, the odd shooting star), and shows
 a small set of personal bookmark shortcuts you manage with an in-page editor.
 
 There's no build step and no dependencies — a small `index.html` shell plus
@@ -49,7 +51,8 @@ bar).
   short to fit them without colliding with the search box, and stack into
   a single scrollable column on narrow windows.
 - **In-page editing** — a settings gear opens a panel for search engine,
-  clock format, temperature unit, weather effects, and location (all
+  clock format, temperature unit, weather effects, night sky,
+  constellations (lines, optionally names), and location (all
   persisted to `localStorage`), plus a bookmark editor that adds, removes,
   and reorders links and saves them back to `bookmarks.json` through the
   bundled server.
@@ -432,6 +435,27 @@ so nothing stale can ever be cached. A few starting points:
 - **Mountain squash behavior** — `updateLayout()` and the `LAYERS` table.
 - **Weather effects** — `spawnClouds()`, `spawnRain()`, `spawnSnow()`,
   `applyWeatherFX()`, and the `CLOUD_IMAGES`/`STORM_CLOUD_IMAGES` arrays.
+- **Night sky** — the real sky over the user's location, appearing after
+  sunset (the `night` column of the sky keyframes) and hiding under cloud,
+  rain, fog and snow (`NIGHT_SKY_WEATHER`). The view faces south: due east
+  is the left edge, due west the right, and the horizon sits on the ridge
+  of the skyline layer, with a stereographic projection so constellations
+  keep their shapes (`projectSky()`, `skyFrame()`). Stars come from the
+  Yale Bright Star Catalogue to magnitude 5, packed into `STAR_CATALOG`
+  by `scripts/firefox-newtab-stars` (run it with `--mag` to change the
+  depth); the 128 with IAU proper names show them on hover. Size, halo
+  and tint follow magnitude and colour index (`ensureNightSky()`,
+  `starColor()`). Constellation figures and names come from
+  d3-celestial's `constellations.lines.json` and `constellations.json`
+  (packed by the same script into `CONSTELLATION_LINES` and
+  `CONSTELLATION_NAMES`, drawn as one SVG path and label each; the
+  "Constellations" setting picks off, lines, or lines and names). The
+  moon is placed by a low-precision ephemeris
+  (`moonState()`) and its phase drawn from the true elongation
+  (`moonPathD()`). From the console, `applyTime(23)` shows tonight's
+  sky at 11pm, `startTimeDemo()` sweeps it across a whole night, and
+  `applyMoonPhase(0.5)` pins a full moon (`applyMoonPhase(null)` to
+  release it).
 - **Testing time-of-day changes quickly** — open the browser console and
   call `startTimeDemo()` to rapidly cycle through a full day (`stopTimeDemo()`
   to stop), instead of waiting for real time to pass.

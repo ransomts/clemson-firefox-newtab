@@ -360,17 +360,20 @@
     // else is placed relative to those two anchors.
     const CLEMSON_SC = { lat: 34.6834, lng: -82.8374 }; // fallback if geolocation isn't available
 
+    // `night` (0-1) rides the same interpolation and drives the star field
+    // and moon (see updateNightSky): stars come out over the two hours
+    // after sunset and are gone by sunrise.
     function buildSkyKeyframes(sunriseHour, sunsetHour) {
       return [
-        { hour: 0,                zenith: '#0F0A24', horizon: '#1D1440' }, // midnight
-        { hour: sunriseHour - 1.5, zenith: '#150F30', horizon: '#241748' }, // late night
-        { hour: sunriseHour,      zenith: '#3B2E63', horizon: '#D97A4D' }, // sunrise
-        { hour: sunriseHour + 2.5, zenith: '#5A76AE', horizon: '#E3A874' }, // morning
-        { hour: (sunriseHour + sunsetHour) / 2, zenith: '#6F8FC2', horizon: '#C9A8D9' }, // midday
-        { hour: sunsetHour - 2.5, zenith: '#5A76AE', horizon: '#E3A874' }, // afternoon
-        { hour: sunsetHour,       zenith: '#3B2E63', horizon: '#D9633F' }, // sunset
-        { hour: sunsetHour + 2,   zenith: '#1B1440', horizon: '#2E1A55' }, // dusk -> night
-        { hour: 24,                zenith: '#0F0A24', horizon: '#1D1440' }, // wraps to midnight
+        { hour: 0,                zenith: '#0F0A24', horizon: '#1D1440', night: 1 }, // midnight
+        { hour: sunriseHour - 1.5, zenith: '#150F30', horizon: '#241748', night: 1 }, // late night
+        { hour: sunriseHour,      zenith: '#3B2E63', horizon: '#D97A4D', night: 0 }, // sunrise
+        { hour: sunriseHour + 2.5, zenith: '#5A76AE', horizon: '#E3A874', night: 0 }, // morning
+        { hour: (sunriseHour + sunsetHour) / 2, zenith: '#6F8FC2', horizon: '#C9A8D9', night: 0 }, // midday
+        { hour: sunsetHour - 2.5, zenith: '#5A76AE', horizon: '#E3A874', night: 0 }, // afternoon
+        { hour: sunsetHour,       zenith: '#3B2E63', horizon: '#D9633F', night: 0 }, // sunset
+        { hour: sunsetHour + 2,   zenith: '#1B1440', horizon: '#2E1A55', night: 1 }, // dusk -> night
+        { hour: 24,                zenith: '#0F0A24', horizon: '#1D1440', night: 1 }, // wraps to midnight
       ];
     }
 
@@ -642,6 +645,7 @@
       lastWeatherCategory = category;
       document.documentElement.style.setProperty('--weather-tint', WEATHER_TINTS[category]);
       applyWeatherFX(category);
+      updateNightSky();
     }
 
     async function updateWeather(lat, lng) {
@@ -827,10 +831,538 @@
       const root = document.documentElement.style;
       root.setProperty('--sky-zenith', lerpColor(prev.zenith, next.zenith, t));
       root.setProperty('--sky-horizon', lerpColor(prev.horizon, next.horizon, t));
+
+      currentNight = prev.night + (next.night - prev.night) * t;
+      currentHour = hour;
+      updateNightSky();
     }
 
-    updateSky();
-    setInterval(updateSky, 60000);
+    // updateSky() itself is first called from the settings block below,
+    // next to startLocation(): the night sky it drives reads the stored
+    // settings, and those constants are declared down there.
+
+    // ---- Night sky ------------------------------------------------------
+    // The real sky over the user's location: the Yale Bright Star
+    // Catalogue to magnitude 5 (inlined below, ~1600 stars), the moon at
+    // its true position with its true phase, and the occasional shooting
+    // star. Everything is gated on the `night` value updateSky()
+    // interpolates from the sky keyframes and then scaled by the weather.
+    // The DOM is created lazily the first time the sky is dark enough to
+    // show it, so a daytime tab never builds any of it; once built it is
+    // kept and merely paused through the day so dusk and dawn fade rather
+    // than pop.
+    //
+    // The view faces south, the way the moon and planets ride across the
+    // sky from the northern hemisphere: due east is the left edge of the
+    // window, due west the right, and the celestial horizon runs along the
+    // ridge of the skyline layer. The projection is stereographic centred
+    // on the south horizon point - conformal, so constellations keep their
+    // shapes wherever they sit on screen, and its horizon is a straight
+    // line, which is what lets it lie on the ridge. Catalog positions are
+    // J2000; the quarter degree of precession since is a couple of pixels.
+    let currentNight = 0; // 0 = full day, 1 = full night, set by updateSky()
+    let currentHour = 12; // the hour updateSky() last painted, override included
+
+    // How much of the night sky shows through each weather category. The
+    // cloud art baked into layer2 means "cloudy" still leaves gaps.
+    const NIGHT_SKY_WEATHER = { clear: 1, cloudy: 0.35, fog: 0, rain: 0, snow: 0, storm: 0 };
+    const reducedMotion = window.matchMedia('(prefers-reduced-motion: reduce)');
+
+    let starField = null;
+    let moonEl = null;
+    let starData = [];  // decoded catalog, brightest first
+    let starEls = [];   // one element per catalog entry, same order
+    let constellationData = []; // decoded figures, each with its name and label point
+    let constellationPaths = []; // one <path> per figure, same order
+    let constellationLabels = []; // one <text> per figure, same order
+    let linesSvg = null;
+    const SVG_NS = 'http://www.w3.org/2000/svg';
+    let shootingStarTimer = null;
+    let shootingStarsSeen = 0;
+
+    // STAR_CATALOG_BEGIN - generated by scripts/firefox-newtab-stars, do not edit by hand.
+    // Yale Bright Star Catalogue (BSC5) to V magnitude 5: 1630 stars,
+    // brightest first, 128 of them with IAU proper names.
+    const STAR_CATALOG = '7td5nk0ba7en2vm0qcgi88fa13mgyu29014hljn9xq15a63xahs16i62f6b816a8uz7ci1ce1vv2j01d86un7il1esga02ab1g8myy7mn1jc5bm87v1lpj334wl1nsfj66301o88z593v1rkqkp4nq1rbet52c71t8ny4afs1tbeeh22q1v8gyu2901vjbqh7v91v982q4pj1y8ehn2jd21qkbo42y21869s7fn2186al95h219ao61kc22a6hh6uo228eeh22q237pme3bk239exjb9g23a9fy3ai2483xwasi24fcsxbpj24l89i4wp25hlas4ai25a9oz2cp25nfyoaqz258ke93mk25e6xoaev26ajgh1m926o7o787k27ann52ke278a4e2q127a7ds5k42888rp9el28aay669y28o2gb8r628miic8y028b2xfdty28glwe4wy2880ua5k129k6kn6sm29805u96t2991cf9oy29q6pi675298gbz44z29kh6kco02apkcl7ww2acqab3bs2aq3moa3s2aadoe82h2bbeou3602banksa1u2chakk3ld2cr0s5bb22dm6ek6x62d8i139072dakrnax12dp9bu3uw2d7aqv2dc2dc2e2a7l2do06dbib2ddfiab6l2dajhi4ar2emftd2th2e8h0g3ad2e8gw03ow2e8iiw5762e9crmbam2fa0i93oh2glp5p7pg2gpkhu3xl2g8qoy9402grjvj5qc2hbdrqb352haonxbrv2hc8ke4om2h9o1f9kd2hk13ebmo2h8qpn8492iaaud2p72i83il79d2jqg483an2j8d058j02jbj8h64n2ja6f25ki2kce6z5la2k9e1t3142k9m1h4n02kbbyj8h42kmhot67y2k96xt9td2k9img5ez2k927m8jt2lb6jv4bd2l9ejw5502lji7r7fv2lm1nlblc2mbg3n8d42mghbz3m72m85q99i52mpch534q2mjelu1ly2m8k9p42e2m88fl42y2mqh2l9172mkl8l4n52momvs7rh2mpisn6nr2nqizcbov2njffz4412nah6o5pg2nccei1z52n86gy6hl2n8j3o8lp2njkij7ap2nmi1f3rn2o85xs6jv2obk9haza2ok0hw0zf2oge6j2et2o89el52i2oejbc9ds2ogldf4ze2okj7l4rm2o80978462p8f367sg2pj6by5cc2pi4il9ek2pbifb21t2pdk5w2nr2pp2ah26z2pdptj2am2po4dz8sy2p9muwafd2pap7o5p72pd7dy8oj2qq8rp9el2qa4l6a152q8hq51n82qaihv4xh2q8ixe4yx2qbm6g5bm2qe8mj7l12q9eyx9wg2q9owx6ij2qi3kcb2n2rh7wo31f2rmqaj99y2rj4lb5wh2rqegr5o42rakag33g2r8pkp6x42rk7si8vt2sobau8s12si5tpabq2sfky14li2skm3f80i2sa2hz9n72sb6ih8kq2s8e315762snfet55n2sj4atamr2s9bbq1x92sdcx2adm2slpcg4282s97c44mi2s885s53t2s9gtm9wf2tckle3uj2tf2os6pq2tog043o12t8c06a5a2tqes51ot2t8hrechj2tam8ec5y2tkjip40b2u8ml093o2ulnjx5sy2uiabt7ej2ukcj55p12uml6943w2uqnvf3an2uk6rq46n2umatm9lj2vqb0p2jl2vqdf622y2vahcf3p22v8jnd2mh2vqaegang2vcjys8v02vbjys9s92vo5wva4j2v87o83m02v9b1taxk2vfjugc0j2v9lpp4v12v95la7hc2we5w557v2wph0v1xi2wcjmq7o22wmojz99z2wkkmy4342wmrdocxn2wkhru3t32w8nd76vq2x9ouwce02x83ft3u22xb4dt17s2xqive6kz2xklyy9gt2xa8nz3lq2xpl8t6py2xj0rb9bq2xn5aa2p42x97vh25y2xcgbr4vw2xlk3m50k2x8qim5q22xa78c8oj2yqhfu4zs2yrhubbht2ym19w3c82yj61b5oz2y9e6qbcf2ybbu71jg2y9c6x26n2y9m4i4t52ymjws3lw2ze91w50y2zmd0884v2zak5z2le2z9ktc66v2zk4wp24h2zjpo7bfo2zq69c6rc2z87tg7xu2ze9udbmo2zimhd76n2zdfpr6wc2zbhsr3hv2z827gbuv308a5t7fu30heym77g30q3kl9xw30q56l86330cbwj27n30pq9h7s33091pd3lo30q26j98630fg023q7308hlj2xa30jiir3zc308kkl93030io0k1u430co0sbps31j0y4bem31gamm2e7318bw98r231dm406kg3191bn65q31mbwja9731alss9io31a35f77031b4n57wp31984v4sf31r9732uu318hns9ij31kn4h8g531qd369hx32ojyi81z32oqfe8uc32jqee2zg32b20a5pq32hheda2732klcq3eb328ly35bd32m9kt7nj32pb7l7ph32fbpr88k32aqf6c1w32k56j8fa33k8hn8n233dibg6oh33ajcg9y433jpnr7f833b4b166w33j6gq7pl338bii2qf339dd94hi33jkeg5r833d6oy5su33bgkt3e23380di69i33m2mt2yx3394z34c4339d3s5sy33lhs545a33pnbe1u633i1w2ap333n8yj8ts33jjj040e338l8mck133fnhv5z633j8g887y34bgtg9ad34ni2q4ru34oeau2a834o1md6ba34l3y87n334j64k6f03496n857n34f7yo9kc34bahjal034ab0c3tl34e8z340j34rbs15zp34kdpj72w34g1rj84n34ka1b2v0348f391f934mjkl3oc34ok9x29g349kk31y834mqnoa7l3493a291q3594f58st359nvf82k35edm01sn35c50f85f35keoy6tz35egaebwu35ao7e2fn35m0pob3q358i3u4na358kym32v359qsw5b735mb0wbt635di9384u35ba3m4dt368eoy6tz36ghwc96v36dp2u5nq36d3uk59k36q5m87dk368baf24d36mqy977436j28j2yn36i4c68sz369ksg97936j6vi5un36ddmbamq36mica7ag36cn237ft36j5oc74s3686xob4s36kh3g73936aoefac136qola9vp36e25e65a37l43v67q37j93x3ta37kkz47ok37b3zv7p1379otj57r37kqh76cy37q5u2a4437mahw3b637mixw8f737dkll75j37akpibbz37mq0xbga37g3ajb9a37r52l8aq37k6fp24f37ijh92e037qp3t0z137kplj8we37e4cea8a37e9r71ua37lm2x59m37kmbkb2937knwv867379o2g67m37aq2eato37a89r1i638kclt2ej38k86j8j538i8lj93838kmkbaxp38bnetaju38n3nlaem38kbefbi038dbyj8h438gi167ra38di167ra38dkfraht3886j96qs3886rz5c038kc2s5n838p5bd4l438kas39s838bc412eu38dj4573i38amwl8dh38orcfaj238k4bs9fp39aclp9l239kg653p2398h4k0ug39okz995w39amx4cd739j56i86c39ka1k3cf39habk29k399cal38139ddc5cal39qi6p8z239alag8mh39mpvp6u539a4bp1xz39l6p630539c7dd4d439j8dy4vn398buw3p039ac7g7nv399ig785i39fite21339llig6b439n4we3oj39lem737639akre9th39ol3k5bi39c13f9wy39b3pe4ph39f4cu8tp3995d65ua39l6e047h39l7zl52u39reik1dn398ej9cbv399g6f3hk398hla36m39a06j3ex3akaoz74f3a9bfn8y93amfn83wj3amh186ia3aeigi4ov3a83ej69a3ald4x2qn3a8e9u6w53aaiweain3a8j5w0uu3ajn2s9ng3ak9r56n53aan0470t3ajqtj3gb3ak4ov7en3aaa5b3e43aab6o6uu3ancwb2e63amefh32h3a8i1o5sx3ak1bi2oj3a9joj9bx3aaom07cl3af5bw6op3b88wb67h3bkmeq5kf3bc0i73ko3bca4d8cf3bld6y7r93beo91a4d3ba1rd35p3bk3d0b0k3bh7nh5gi3bl8wq1cb3bkfiab6k3bbice4cl3baqcz8rh3bl53d4bi3bp6xf3n23bl7wm4fp3b88y34pl3bce432wj3b8ine5cl3ban5r1bh3ba6s39yr3bla1747x3bjafga623beamu24w3b8kug7653bamg93t63b9q103l63bkr2a5e63bl2dqcj63ca78b6gl3cn8fd1p83cing3amj3cpqyg2g83ce2bc5bg3cq3cr33f3cvagp1tk3cbc1m18d3ceh0h4113c82nd9k13caa8f4t13cnfj7b6r3ccijzbgp3cfir05fy3calnw1fl3clmfe3ii3c9npr9ad3ceqf45w93cqrrj7h23ce5ia6oz3c8a5r95w3cke1u51b3cdiwg32o3cllzf83v3clm0u6i23cloymagn3cjq586xo3c95upblw3djdm67g53dpexx2j63d8kxs74y3djnse7te3d94ly9pf3da4spamj3da4ux6f03dde8t2083d8lwfac33dq3nbart3dgd507er3d9glm40r3dagouay13dfgxn34p3d8h1n48b3dohj53g83d80wv8tf3dl8sm90q3dpjo22uc3do200aut3da32r6yx3d85pt7zj3dm7zn60k3do9m710c3dea463nj3djg0185w3dphp62eo3dbof55m53dab2x2dh3eacq65j63eld7m5kw3ecgig6hc3efoqc8h03elp58bha3ey1v8a513ef2qg1na3ea3io54e3ec6hz7nt3ekiav8ce3eq33l3va3ek32u1od3e942g7xy3el91v3d73e8c9b0vn3eqdmn2823eje871p83eqi2i1ts3emm6940q3eam6n3wq3emo5c4v83eqq1c3kh3eq361aqr3ef6zo7ot3ec86a5ql3e9ber5sr3ejdzm7m93ekqmy2vh3ekle135p3fkn223pp3flp608x83feprr9uv3fpre37dn3ff4x0aoh3fk68z6cb3fk9zh3ml3fbhzv9d43f9o1c4zt3fereead53f97i48i53f98bx6wn3fae0s1yj3fdiee5nj3fkih090o3fmqcn0ny3fc0mxbst3fb70v8qm3fi9zh7du3faj7x4823fqpsd6ce3fk4fc45g3fkk6n52u3fdq8w4uw3f94d68sj3g98nw9ea3gdgiqai13gbg004ab3gpgga65h3gnlpq8j33gfpr4bcg3gdqd37vt3gf6dq7ej3g997556g3ghj6da7w3ga417bki3ge6kn6sm3ggc419rz3gjqjj4fm3gkqxd68r3gl54a8nx3gbl8fcg63g9lqr6kt3gllu92593g9npwbsz3gco129bc3gkotd1wf3gfqwa6h73gq0dy1xt3hg3ah9wg3hd46canv3h94dj55f3hefxe4e83hein943s3h8j4h49m3h8jeld9w3hjmys9hf3hson39zf3hbp7iaqz3h994p38e3h9jcl0yo3hlnhl5z93hl1brdlm3hm1caal83h92u339i3h935z5vi3h94xt2yz3hd5c5a4m3hm5bf7q83hc9p7a9z3hqady7uy3hbc3j4jp3hogqgcsa3ho2177ng3hk6xyahm3hre8r0tp3h9ejga4w3hgf9x93g3hgg8h72a3hbioraeu3h9kh35y83hb36k7q33hd3uu3md3hh44h59x3h95d67wr3hb5yp69p3h89fx3ah3h8ex43ue3hcf6h33d3h8hpv3903h9o1q86s3hkpl55vh3h917q7jx3ik2uw7li3i946m6z43ig54y8pd3id5g08ps3i98xr9683ilcbz2nk3ikdr34bt3i9j4a5nv3ijoqg5n93ijqr43l43ier5r7fq3il4r9atv3ia4xg7mp3i954d8bt3ia5o7c2a3ia65x5xe3i7b4rd7x3ipk7c4n13iekdq3yo3ilmfs3hk3idp6kbns3ifpjbbxj3idpnm9i63ifq2k4g53iarctaa73i94ce8tz3i9a3d77g3i8dg06vq3iklvv9si3irnenbb53ib14p4og3i8b118pt3ipeia5p03iehu09tu3id5er5fd3iq8n87mt3ioa5j5wd3ijdou20t3i8gq10hl3inh773ky3i8i7lcy33iaint5c13iinvy6ux3ik1deb773jc2cr75o3ja7k454y3j8a1j2c03j9dy42253jdeww3623joglg2ld3jbi3f3nr3jok2t5yb3jal7t9q63jm9fb6pq3jkaq92i63jqg8j3fc3jghpe4m93jlk6r79i3jpp684e93jap5x8a73jm3ft3u23jb3p38gt3jk6nf1ve3jc78o97y3jk81sbga3ji9eu1ne3j99no0ys3jmb4l34w3jcgpi3fy3jekzy2153jc0pm9jo3j90u42ie3ja428anc3jo4px8nc3jl5lt7mq3ja61j5y23j96wa4803j8a6z7e83jaeep94j3jlgbj3rm3j8l038jt3j8kapdmj3jala52773jplp39ug3jclqo8ci3jbmb19vx3jnmp66uf3j9q16amj3jr0lx2343j90qs97f3jj2kd7ml3jj79i48e3jk80z5mn3j9bq67ps3jomri8c13jims68ak3jkn554803j8r9840y3j96ep8dn3kvf8l6im3kajk67q93k95ne6iv3kc7ma2uu3ka9ax74h3kmcqg3op3kbk2x5bd3kem989yr3k8nbicxv3kaoot2tj3kcqys68i3k8r4f5co3kp7wm2t23kj8go50p3k89fm5gk3k8hf073t3kkpf82p93kdr3y8r03kg26x3de3kq6gi7od3k86u48ic3kg8bf9a13kn9843583k8d2z9dl3kgh694sc3kok9o8yj3koksz99v3keqrtcrf3kiqzf4fn3kl01d6hb3kq13q8r23kj4d260e3kq7398313k8cry8i23kagnc3w93k8gtz31u3k8j1g5iq3kdo2h6k13kqq0p6xy3ke0xt7j23lp4xa6cr3li7ob5jc3lmgzx8053lai997if3lgnlx9ff3lnnzi83v3ldong9my3l9px1az33lk0a65hf3lr1yg7d93lo4y42da3ll7ei7ar3lc9j33tx3lma0977a3lmlxk1r93lhmjm8ui3lp5eu3pq3ld60v6113l98rb5823lf9h83vy3lq9m84463lcaf23rf3lgc9e2i43lqcgg0qa3l8j4z5ad3lbkv871n3lamahcls3lmmnc7ii3lm39f4fz3lk61k75y3lmaw48yq3lmdpv3gj3lngvf98m3lepkx3w63loq8tad03lnqh54eo3la36o5if3lf3v496p3lq4fec013lt5qgb3b3la5rc72r3lo7v874p3lld1x6nv3lce1m31a3l8j1k39w3l9qqz5423lj76a81h3m87bnbhx3ma7hk4fi3m8al6axc3mdail1cc3mgbpu9nw3mccyf56l3mamozati3mepzn1xj3ma54z85e3mc7sk7yr3mm8ce3c43md9483y23m8a5s2kb3m8bq66wz3mahb26lx3mdol27pt3mfpqba0c3morg05tm3ma7kv7id3ma8un4vk3m89124xy3mab37ayl3mabz72mc3m9cna8ur3mafyi8ai3mfizf5ec3mkofy50j3mqpmi4ed3marfj72y3mcrry1vu3m91ds99l3ml38m9793ml4na25c3mq59y4nb3mk6qy2lz3mlazb4653moht82d83mcn7ac6j3mnnzx2xs3mdo0ubdy3mfoho62f3mjouy59f3mjq1ua9s3m90cq9s73ma2vjc583mb6qh9yu3mjb6c27n3m9gkm5wv3mbi5v8gn3mak4s9t73man384uj3mpnga9393mnqr77o53mqqv2ar93md0yla443n83b49ne3nq6y16ph3nm8tm48v3n9dno8i63ngfhe28l3n9fic1yq3nil1t3ed3nko299rd3n9qp178m3n90lx2333nc0v2ao43n92cpcez3nc41sbhk3ng64y9ip3nn7mc5683na8od7vd3nnggpaxv3nchg390v3nmhli5f13n9ht343m3n8i1x3h43n8k6u6jv3nekld4sp3niro4bdq3nm5ve47g3nm83qcvu3nob2s9r43njh718f23niix052v3nioflamd3nqr6l7xg3nj02m5lu3na4lt27g3nqajj9wt3nkb2ycbz3nig1o4ed3n9gph3ge3n8p44cg33nl6jk79g3n9b186uq3nbbya2p53nqcew29r3nrj0b80z3nakzm4qy3njovt8ro3nqpvaaja3n9pxparg3nbrkb4rv3na46r3u53ok6td92p3oaakl4y63oqbew3cp3omkhgcif3oen0t8sw3o9n764t13oq0sp3e03ok4ar42d3om6az76m3o86gx6kk3o88xw4r33oqbf7b463oaie84zn3o9ir84sf3o8kd33ct3oalw18ow3oim5h3ti3olme1c0j3oao5j91a3oiq0p6xy3og7i06eh3o9a19bwp3omaz96qb3ofbo85xq3o9co242u3okcz32ag3ogfa72bk3o9h2r8943okhbcc153oqhul3yf3oamp650w3o9r0o8ry3oc03p6i53ok0bv9xg3ob4zcatq3oa9995iw3obcuw24m3okmer5po3obnsw9nx3oq26v76v3oj6ei6dq3o78un4vk3oga3o6dx3oiapy4233oedeh2ra3o9exy2dp3o8i0q6623okidla7x3ogkem6bg3obkuc6nr3oelx279o3oc13dbie3pk3gg8la3pa3gg8la3pa3oua013pl4fzcg53pa70q8hy3pd94j3473p8ctt7ie3pdd0w8q63pribg8yf3piil42hi3pcj1z6ar3pcq6max73pc5uh8lz3pc8f74sk3pq8m8aqp3pa8s84r73p9enp3ux3p9i5m3hy3peice4yh3paku77a53pakz37m93pklfs2503p9lha3oh3pkn649333pc1f88ua3pk4ib51n3p95a68383pc5os7q73pb6tx22r3pk7zy7ym3pd8p04k03pjes72l33p8fy22z53pkg1ebxs3pqikw3593pjjha6423pfk0m9tl3pal6j4uw3prqp9at13pl1dm8kf3pk35i92z3p94mm53a3p97qg7pi3p88dk4wt3p88ge43z3p9a3e8ln3pac3p2hw3pfcbl2dm3ppdwm7gd3pben96bs3pmepl36f3plftyb5w3pqltkbiz3pmmi36yy3pgpy871u3parqg8vu3pq24464b3pd41earj3p972a5si3paamlbuf3pei4m4af3pkku188j3pnobw4ge3pjp48aw73p95vi84s3q980n5e23qe9a76u53qpb5p7ax3qniwt0ve3qrlaf6973qkmm5cbi3qintv82r3qbp0r5fx3q827t1q33qk2eg4om3q855582v3qk5dy8683qcacg2vk3q9av44px3qjaxz57y3qlerp28m3qkfnv6gm3qqkxi4nu3qimr099r3qkoi77q53qdp186c73qcpj02k93qlpiz6s03q9qay5hp3qoqt857m3qg3g5a063qb3gt7mr3q98u94zk3q9bkt7kc3qqdft66s3q9di949i3q9fplaq63qblea5tj3qbn2g4wy3qi1t8bij3qk2t5ato3qp4x0a2g3qk65na1e3qg66j5b03qa6cz6uz3qq9183b83qlaix1i23q8cbk9eu3qicm5a9z3qaf6137e3q9g5p2133qln1c7li3qkong4gn3qbqigdgb3qor9g5bx3qarap3nm3qb41e2363qe5w62id3qf9h65y33qkatx4xv3qqdnu1sf3qpdz022j3q9hgk3bb3q9in63gj3qclnd68v3qe0m2b5g3r94296jw3r94er41i3ra67g6wy3r8dlf5j13rkfdva2p3rdg2m4hb3r9jk63oc3rfjzv6wr3rlo5w6923rdp1cbqg3rdp4m5hl3rjp5o95u3rf1noc793rk5n581l3rs6rs9tn3rqc2o9jw3rcc5q1e13racrm6r43rqeae8bf3rkfeg5j53rhg1n9lo3rri655fc3rqmlq9lp3r9oawam03raqdndcz3rnrcm3fn3rb26u8fl3ra2xm5ro3re32z3mv3rb3as5bo3rj3ae15h3rn9ha3ml3rcc7ra2b3rcge82tk3rjgikawp3rci6n49l3r9m1u3p23raqzac773ri0up64j3rk1j791q3ra3kubbj3rk6f29ff3rd8du37x3r99fl27q3reagsc5v3rpfkq5pn3rlhfnamd3rgicm8ka3rpikmahw3r9iow9rd3rkktv53u3ranjp5yk3ranu229q3rdqra8wr3rn0lt36g3ra10t6uu3rq7uv7kc3roa1y3ak3rbb7o54h3r9dbe6po3rpglq3gh3rdgnd4sx3rnilp62f3rfkge34q3relgmbch3rgmax8lf3ran7t40m3ro57w86z3sc5n89ry3so6go6hc3s86sr7363so9ip46a3s9d3m9w33sbf0x8ad3sqivd4qj3sak3m1pr3smnfy8x33s8npd5kj3seo6badb3s90140zx3sn29w8rk3sd4ip6pt3sj5sa5z63sd7pba813sm8f75583sr97q4lr3scasq60r3sjb9p4sv3sfbyd8g33seexr67i3sqj3n5083s9lpk1xt3scpnhciy3sjpri3r53siq007b23skq9o97f3sa0a58i53sq0t8aub3s93s069i3sc4czbty3si53e8ag3sc6jc6dz3sb7b3cak3saam8c4h3sfat867g3sjecpax83sjf6n92q3spfc91pf3s9fdw7d73srke0c903serqwawr3ss0je4eb3sq5tc6e33s87552pb3s8atk24o3sjb3da023skebn8xt3sfek78ov3sagju9on3slgqx6rt3shh1i8zp3srheh8vh3spka553g3sakn73un3sdlbm5cy3snnhp9vn3sepvh94p3saq3l25u3sq10vbns3sf2h89v63sb3u09l23sp5z385c3sd6wm8y33s97pa5up3sp99k21f3s89oz37b3s8car5wu3szce01yx3s9cfb20c3s9eef2z33s9fro9qt3scgdhcxf3sohgk3bb3sghlx3ie3s8icl9p23skiy070v3sdjgvahq3sbjp26ma3spk0d9hy3s8lc2c043smlvscg23smnw38kw3saopf3sn3saq1y64c3s9rfc5ki3si127bht3tm1ovag53te26u8fm3tg29d3ae3tj2kjacv3tp3ug77d3th64h4923tk61w1rd3tn7z75du3t889t3vu3t89o74e73toaq9b423tcc063qb3tld7f63u3tqgek8vp3tfgzx8053tgik98pc3tbjb3bxf3tmkmh4hy3talq09023tmlvm56u3tolxn6hr3tln4m4x83tjnekak23tb1qn7f23to2e2a7l3ta32t6113te36z1q63tb3uwc0d3t84wc7nq3ti8v23zl3t89f7ax33tac5yb9i3tfc91csb3tkcqq7823tmj5b7tx3tpo3bai33teoe25eu3tcpkm7c23to29157f3to51naj63ta8oe5623tcch71z63t8dls7ky3tcf4534f3tafa14103thiy09bt3tkje4bbq3temag4zu3tgqav3qz3tkqcd2te3tmqqxbj23taqyoaq63tr1gm1mo3tf3097dj3tj61o9ww3tc6l087x3t96qd8u93tk9xv2gv3tka2t2uh3t8bqv2y33t9eef22o3t9gl287b3tmh097ko3tkhp921b3tmkrs3iu3tml8i77e3tjmvv5f43tjrr36o43tj2n69l23tg3pacon3ta4wo65i3tm6t84c43t87u4bj43tbd2z9dl3tgfdm1si3tpjrp4b83tdkarb793tdkii59s3tflos4703t8lym2uy3talys42x3terj0bgx3tl1l6agh3ul3tr57h3uj5lc9u53uo6bj8my3u88zp8df3uoa2b5pq3ulbgn4xz3umep37qg3ubihf5uc3u9kaob7a3udksh3q43uqnvg2733ueq7y9yh3u8rrbb8w3u907u5r13uf0xxavl3u92td5zv3ua3rd8kg3ua8cv3gi3uaa0x4nw3ujabw4t43ubc6g2ss3ufcaj4tv3uqil13ys3u9jllbyx3ufmuf9tr3uknuu6qx3uqo3p3dl3up1ng5tg3um2yu4rl3ua7bw6pu3uq820af93ua8br9z83uo8uv9m23uedqc1wv3u9ex08l03ujf1v9bi3umj9lapx3uqlo86b03ulmo438e3ulo414c63ukoz59x13ulqj17mi3ua34oa1n3ug58t6xw3un5tc5eb3ua6lu7233um6qr7x53u97faaqx3uucbh5n43ujdmn3ti3uhdvr0wq3u9ev74bk3uag078l23uogev5oq3urgk00oz3uchn64ig3uej2g1jc3ugjs27xe3ubnpx6pz3umo0i8w73umpecbur3usr77bgn3u98as6m83ukacw2dh3u8fbk2du3uffb7a1j3ulgn12fm3ujh2l4893uahdo6ac3uaimg5f03ualuzauv3ujn2bazo3ubo249lh3unpnq4fl3uf3gd9nq3vm4u73pd3vd50u9m13vj71h5o83vc7ou3823vj86d34a3vb9956ns3vma7x3g53vac681am3vrep52c73vaf26bal3vehi38v33velzo9fb3vpm444323vfnbw9sc3v9rgw97k3vk0u7akm3vc1xua2q3v92jx9a63vi4yo8j63vd5rt9v93va65q8ne3vj8sg2w33vo8vq5rm3vq9bs9373vlapu3yv3vlb8c53k3vfbh45h73vqcu14u73vediq25j3vmek4cci3vnevw92i3vhfpd7863vagzm87m3vah3a4zc3veh6r6rm3vkhtt65c3veis12q93vkir06623vbj6c3jn3van2h9wx3v9nah2v43vqqgtaab3vqr5171i3va03564t3vq1ypa8d3vg3vwaad3va50t91z3vm69j7353v86kp6uv3v86za64k3v976d86t3v981336o3vrd9q75y3vke7d8sj3vkeec91r3vdegxca83vqf7y55s3vkih5b633vdiuucsg3vel838n03vqmpa6eh3vamz58ot3v9nf98483vbnq7apz3v9qjvas53vsribaiy3vl1g83fj3vg8p9dax3vr8j45h63vaea57773vmi4z53u3vnhytcwv3vqjbj5kq3vlkv28m03vblg23eg3v9mbx5hd3vkn2ibhh3vq4af9kc3va4nl28c3vo56f87g3vl6uv42w3vl8r55to3vo94t90d3vbaj57c53vmb177te3vkc1fc053v9dp11ix3vofmb55c3vqg0b5jn3vlgqw4o33v9l2a9d93vqmgf98a3v9nff9s93vb1jmbfr3wh1x0adb3wj2hw8y23wd40haqa3w97agbow3ws8gn51s3w8a155zc3woflf80a3whfpu9ta3wejqi8153wql255463wklambhc3wblx279o3wcqzi67b3war3lbr03wrr9x9d13wo1zc6nr3wo28kc8t3w93g62013wb69g9tv3wo69b8aa3wf6ufb8r3wa7xc4aj3wo85p6m83w88lh7ns3wk8xjbh33wb9il5q53wl9ts3hs3w8c0m1s63w9cqv7ey3wcd67aas3wkercag83wziic3q23wkijo98x3w9iuh32x3wilwa5713wnm444323wfm9cbeb3wmmvx9jp3wfn8c4gy3wmpmj4bg3wp4ac4ha3w84kobnr3wo5wzaxc3wd5xi8ds3wg68777u3w880z5v03wm8cy86w3wramp3hd3wcb4u7h03wkcelc9w3wod6g45k3wpe7h9hu3wle972ou3wqeer90j3wbhsd38v3wfil04y53wmioa89d3wkj24c913w9k2g8c63wqkz7aaq3wjmnp8gx3w9mxo8f63wbontac33waqmebc73wordz5ui3wcrqc1ze3wb';
+    const STAR_NAMES = {0: 'Sirius', 1: 'Canopus', 2: 'Arcturus', 3: 'Rigil Kentaurus', 4: 'Vega', 5: 'Capella', 6: 'Rigel', 7: 'Procyon', 8: 'Achernar', 9: 'Betelgeuse', 10: 'Hadar', 11: 'Altair', 12: 'Aldebaran', 13: 'Antares', 14: 'Spica', 15: 'Pollux', 16: 'Fomalhaut', 17: 'Mimosa', 18: 'Deneb', 19: 'Acrux', 21: 'Regulus', 22: 'Adhara', 23: 'Gacrux', 24: 'Shaula', 25: 'Bellatrix', 26: 'Elnath', 27: 'Miaplacidus', 28: 'Alnilam', 30: 'Alnair', 31: 'Alioth', 33: 'Mirfak', 34: 'Dubhe', 35: 'Wezen', 36: 'Kaus Australis', 37: 'Avior', 38: 'Alkaid', 39: 'Sargas', 40: 'Menkalinan', 41: 'Atria', 42: 'Alhena', 43: 'Peacock', 45: 'Mirzam', 46: 'Castor', 47: 'Alphard', 48: 'Hamal', 50: 'Polaris', 51: 'Nunki', 52: 'Diphda', 53: 'Alnitak', 54: 'Alpheratz', 55: 'Mirach', 56: 'Saiph', 58: 'Kochab', 59: 'Rasalhague', 61: 'Algol', 62: 'Denebola', 64: 'Sadr', 66: 'Schedar', 67: 'Mintaka', 68: 'Alphecca', 69: 'Eltanin', 70: 'Naos', 71: 'Aspidiske', 72: 'Almach', 73: 'Caph', 74: 'Mizar', 79: 'Dschubba', 80: 'Merak', 81: 'Ankaa', 82: 'Enif', 84: 'Scheat', 85: 'Sabik', 86: 'Phecda', 87: 'Alderamin', 89: 'Aljanah', 91: 'Markab', 93: 'Menkar', 95: 'Zosma', 97: 'Arneb', 98: 'Gienah', 100: 'Ascella', 101: 'Algieba', 102: 'Zubeneschamali', 104: 'Acrab', 105: 'Sheratan', 106: 'Phact', 107: 'Kraz', 108: 'Unukalhai', 109: 'Ruchbah', 110: 'Muphrid', 117: 'Izar', 118: 'Kaus Media', 119: 'Tarazed', 120: 'Yed Prior', 123: 'Zubenelgenubi', 126: 'Kornephoros', 127: 'Cebalrai', 130: 'Rastaban', 135: 'Kaus Borealis', 137: 'Algenib', 138: 'Vindemiatrix', 139: 'Nihal', 145: 'Alcyone', 147: 'Deneb Algedi', 156: 'Cor Caroli', 157: 'Sadalsuud', 162: 'Algorab', 164: 'Sadalmelik', 168: 'Alnasl', 189: 'Albireo', 195: 'Wazn', 215: 'Errai', 218: 'Alfirk', 221: 'Yed Posterior', 236: 'Megrez', 253: 'Segin', 282: 'Rasalgethi', 289: 'Tarf', 293: 'Ain', 315: 'Algedi', 342: 'Porrima', 343: 'Thuban', 365: 'Alshain', 478: 'Kitalpha', 566: 'Alkes', 665: 'Acubens', 732: 'Alrescha', 842: 'Anser'};
+    // Constellation figures from d3-celestial: 89 constellations, 893 vertices.
+    const CONSTELLATION_LINES = 'And:2e1a7l1cf9oy0rb9bq05u96t|13q8r20wv8tf0qs97f0rb9bq0pm9jorctaa7qnoa7l|rctaa7reead5rcfaj2|1cf9oy13f9wy0yla441caal81w2ap3|reead5ribaiy;Ant:azb465c3j4jpco242u;Aps:h4l0ugiwt0vejcl0yoj5w0uu;Aqr:o2g67mo5w692owx6ijpkp6x4pvp6u5q0p6xyq586xoqh76cyqys68iqsw5b7|owx6ijpl55vh|pkp6x4psd6ce|q0p6xypy871u|r2a5e6qys68irfc5ki;Aql:mvs7rhmyy7mnn237ftnd76vqn0470tmhd76nm3f80imyy7mnmhd76nm406kg;Ara:k5z2lek9x29gjh92e0jne2mhjo22uckag33gk5w2nr;Ari:3a291q2gb8r627m8jt26u8fl;Aur:6xoaev63xahs5wva4j5q99i56al95h6xt9td6xoaev6xob4s63xahs5tpabq5u2a44;Boo:fyi8aig3n8d4gi88fagtg9adgtm9wfheda27hns9ijh2l917gi88fagzx805|gtm9wfgiqai1ggpaxvgouay1giqai1;Cae:5833h55eu3pq5fv42u5ve47g;Cam:5qgb3b5upblw5o7c2a4fzcg54fec01417bki|5o7c2a7b3cak83qcvu;Cnc:ady7uya4d8cfa3e8lna5r95x|a4d8cf9kt7nj;CVn:eyw9wfejga4w;CMa:7dr5k47td5nk85s53t89i4wp84v4sf82q4pj7c44mi|8ke4om89i4wp|7td5nk80z5mn86a5ql7zn60k80z5mn;CMi:8uz7ci8mj7l1;Cap:nhl5z9njx5synpe5kjo1c4zto5c4v8otj57rp7o5p7p2u5nqoqg5n9of55m5nhl5z9;Car:7o83m07en2vmao61kcbu71jgcei1z5c6x26nbwj27naqv2dc9oz2cp9732uu9fy3aia4e2q1aqv2dc|cei1z5cuw24mcwa25xcz32agcwb2e6clt2ejc6x26n;Cas:27gbuv1nlblc13ebmo0s5bb206dbib;Cen:d4x2qne1t314efh32heou360ftd2thg483ang043o1g023q7gbz44zgw03owhcf3p2|g023q7ffz441|gyu290ftd2thga02ab|efh32he432wjdce2cw;Cep:npwbszo0sbpsonwbrvp58bhapr4bcgpo7bfoq0xbgaqf6c1wrdocxnouxce0onwbrv|ouxce0qf6c1w;Cet:35f7703097dj2uw7li36k7q33gt7mr3il79d35f77032r6yx2os6pq25f65a20a5pq0ua5k10di69i1bn65q1md6ba25f65a;Cha:9m710cc9b0vncg40qhe8r0tpdvr0wqc9b0vn;Cir:hp62eoh0v1xiht82d8;Col:7dd4d46rq46n6jv4bd6e047h|6rq46n6xf3n2;Com:f8m8apf9x93geep94j;CrA:lys42xm44432m6940qm6n3wqm5h3tim1u3p2lsg3ldlha3oh;CrB:hzv9d4hwc96vi13907i6p8z2ibg8yfih090oijo98x;Crv:e1u51be31576e6z5laegr5o4ejw550e31576;Crt:dft66sd7f63ud3s5sycq65j6cyf56ld6k5hud7m5kwdlf5j1dt85md|d3s5syd7m5kw;Cru:et52c7e6j2et|eeh22qehn2jd;Cyg:ojz99zo1f9kdnksa1umuwafdmkbaxpmbkb29|ny4afsnksa1un2s9ngml093o;Del:nse7tenvf82knwv867o1q86snzi83vnvf82k;Dor:4xt2yz5aa2p46fp24f6nf1ve6tx22r6fp24f5w62id5aa2p4;Dra:kpibbzkrnax1k9hazakarb79kpibbzm8ec5yl8fcg6jugc0jizcbovijzbgphubbhtgaebwuej9cbvdc5cal|l8fcg6l8mck1|m8ec5ymx4cd7;Equ:om07clol27ptoi77q5;Eri:5xs6jv5ia6oz5bw6op4ux6f04lb5wh4d260e4b166w43v67q3ej69a35z5vi36o5if3io54e3uk59k44h59x4dj55f5bd4l453d4bi4z34c44fc45g46r3u53uu3md3ft3u233l3va2u339i2mt2yx28j2yn1vv2j0;For:3pe4ph39f4fz2eg4om;Gem:78c8oj7dy8oj7si8vt8be9a18rp9el8z593v8sm90q8hn8n286j8j57o787k7tg7xu|8hn8n28g887y;Gru:qmy2vhqee2zgqab3bsq1c3khpme3bkqab3bs|q103l6pri3r5pkx3w6pcg428;Her:ixw8f7j3o8lpjbc9dsjcg9y4j6da7wiweainioraetidla7x|jbc9dsjoj9bx|jcg9y4jys9s9|kre9thk4s9t7jys9s9joj9bxjys8v0kkl930ksg979kz995w|jyi81zj3o8lp;Hor:4we3oj34w30w31b2w233l2qh3ji2c23g6201;Hya:a5t7fua6z7e8a3d77ga0977a9zh7dua5t7fuabt7ejaoz74fb6o6uuay669yber5srbs15zpc2s5n8cj55p1dd94hidr34btfet55ngbr4vwh694sc;Hyi:0hw0zf4dt17s32u1od2qg1na27t1q32ah26z;Ind:nvf3annzx2xso7e2fnpf82p9oot2tjnvf3an;Lac:px1az3q2eatoq16amjpvaajaq1ua9sq8tad0q16amjpxpargpx1az3|q1ua9spqba0bprr9uv;Leo:bqh7v9bpr88kbyj8h4d058j0doe82hd0884vbqh7v9|byj8h4bw98r2bfn8y9bau8s1;LMi:bpu9nwc2o9jwclp9l1c419rzbpu9nwb2s9r4;Lep:72a5si6vi5un6oy5su6f25ki61b5oz5w557v6by5cc6n857n6rz5c0|61j5y261b5oz65x5xe;Lib:hfu4zsh6o5pghot67yi1o5sxi2q4rui3u4na|h6o5pgi1o5sx;Lup:ice4cli4m4afhs545ahru3t3hbz3m7h0g3adhlj2xahpv390hsr3hvi1f3rniir3zcin943s|hru3t3i1f3rn;Lyn:7bnbhx81sbga8m8aqp9p7a9zafga62as39s8atm9lj;Lyr:lp39uhlota01ljn9xqlp39uhlvv9silyy9gtlss9iolp39uh;Men:75416d6eh11y5p015u5u81fx;Mic:o414c6o303jtopf3snong4gnobw4geo414c6;Mon:8wb67h9fb6pq8bx6wn7i06eh78b6gl|8bx6wn7v974p7ei7ar7kv7id7qg7pi;Mus:dm01sne871p8elu1lyes51otf391f9eik1dnelu1ly;Nor:in63gjj1k39xiwg32oikw359in63gj;Oct:gq10hlqcn0nyp3t0z1gq10hl;Oph:ktc66vkll75jkij7apkcl7wwjmq7o2j4573iisn6nrive6kzj8h64njvj5qc|jmq7o2j8h64nj4a5nvj1g5iqizf5ecj0g54v|kij7apjvj5qck3m50kk7c4n1;Ori:7398316u48ic70q8hy76a81h6zo7ot6un7il69s7fn5os7q7|5rc72r5oc74s5m87dl5la7hc5lt7mq5os7q75pt7zj5vi84s5z285c|62f6b869c6rc6ek6x669s7fn6gq7pl6un7il6kn6sm6pi675|6kn6sm6hh6uo6ek6x6;Pav:nn52keo0k1u4nbe1u6lu9259la5277kzz215kk31y8lnw1fln5r1bho0k1u4otd1wf;Peg:pnm9i6qaj99yqoy94005u96t097846qpn849qd37vtq9h7s3pnr7f8p5p7pg|qpn849qoy940qfe8ucqcz8rhplj8wfp608x8;Per:4bs9fp4il9ek4ly9pf4l6a154cea8a4atamr46canv3xwasi3kcb2n3ajb9a3d0b0k3nbart3nlaem3moa3s3oua013kl9xw3g5a063gsa3z3moa3s|4r9atv4x0aoh4spamj4atamr|3nbart361aqr200aut;Phe:0i93oh19w3c81pd3lo1rd35p1bi2oj19w3c806j3ex0i93oh;Pic:7vh25y6qy2lz6p6305;Psc:1f88ua1ds99l1j791q1f88ua1dm8kf1rj84n2177ng2cr75o26v76v1yg7d91qn7f21f77j217q7jx0xt7j3rrj7h2re37dnr5r7fqr0h7cyqy9774r5171irfj72yrik77pre37dn|qy9774qp178m;PsA:q8w4uwqkp4nqqjj4fmqh54eoq2k4g5pmi4edp684e9p854k6pmi4edq8w4uw;Pup:7o83m08fl42y8s94r78un4vk91w50y97556g9el52i9bu3uw9fy3ai|91w50y9124xy8y34pl8s94r7;Pyx:9bu3uwa1747xa3m4dta8f4t1;Ret:4wp24h4y42da4lt27g4bp1xz4wp24h;Sge:mri8c1mwl8dhn4h8g5|ms68akmwl8dh;Sgr:l6943wlas4ail8l4n5ldf4zel3k5bi|mfe3iimg93t6m1h4n0lpp4v1ldf4ze|n223ppn55480n2g4wymp650wmh851xmah4zulwe4wylpp4v1l8l4n5ky14lilas4aim1h4n0m4i4t5lwe4wym2x59mm6g5bmmbx5hdmeq5kfmer5po|m2x59mly35bdlvm56ulwe4wy;Sco:ihv4xhiiw576img5ez|iiw576ixe4yxj334wlj7l4rmjhi4arjip40bjkl3ocjws3lwke93mkkle3ujkhu3xlkbo42y;Scl:14p4ogrkb4rvqzf4fnr9840y;Sct:lig6b4lqr6ktlnd68vlea5tjlig6b4;Ser:i9384ui5v8gniau8ceig785ii9384ui167rai7r7fvica7agisn6nr;Ser:jvj5qckeg5r8ktc66vkw56bal8t6pylx179o;Sex:bq66wzbfh6bic556qec5p6w8;Tau:6ih8kq5bm87v56l86350f85f52l8aq56j8fa6al95h|50f85f4n57wp3zv7p14ov7en|3zv7p13y87n346m6z4;Tel:l1t3edlcq3eble135p;Tri:26j9862hz9n72nd9k126j986;TrA:jgh1m9ifb21thq51n8jgh1m9;Tuc:ptj2amqyg2g80lx2340dy1xtrry1vupzn1xjptj2am;UMa:e6qbcfcsxbpjcrmbamdrqb35e6qbcfexjb9gfiab6lfypaqz|drqb35dmbamqd369hxd2z9dl|dmbamqcx2admc06a5a|cx2admbwja97|csxbpjb0wbt69udbmobefbi0crmbam|crmbambf7b46b1taxkaegang|ahjal0b1taxk;UMi:i7lcy3iuucsghrechjh6kco0i7lcy3jeld9wkapdmj2xfdty;Vel:a4e2q1aud2p7bii2qfch534qbuw3p0b0c3tlakk3ld9fy3ai;Vir:dm67g5dpj72we9u6w5eoy6tzf8l6imfj6630gig6hch196ia|f367sgeym77geoy6tz|f8l6imfpr6wcg8h72ah3g739;Vol:agp1tk9r71ua9eu1ne8fd1p889r1i69eu1neagp1tk;Vul:max8lfmjm8uin0t8swn64933nga939';
+    const CONSTELLATION_NAMES = 'And:Andromeda:023a9g;Ant:Antlia:c1c460;Aps:Apus:iio18g;Aqr:Aquarius:q1i6k4;Aql:Aquila:mgc7k8;Ara:Ara:jwo2mg;Ari:Aries:38o8n4;Aur:Auriga:6d69ss;Boo:Boötes:h8u9n8;Cae:Caelum:5o63pc;Cam:Camelopardalis:6hcci0;Cnc:Cancer:9w9910;CVn:Canes Venatici:etca9g;CMa:Canis Major:7iu4xs;CMi:Canis Minor:8g67bw;Cap:Capricornus:ob058w;Car:Carina:b401uo;Cas:Cassiopeia:rbcb86;Cen:Centaurus:fe63uw;Cep:Cepheus:q1icf8;Cet:Cetus:2766k4;Cha:Chamaeleon:el00p0;Cir:Circinus:gs61rw;Col:Columba:6li3xo;Com:Coma Berenices:exi8so;CrA:Corona Austrina:lrc3uw;CrB:Corona Borealis:iei9ew;Crv:Corvus:eco5fu;Crt:Crater:dhf5sc;Cru:Crux:exi25s;Cyg:Cygnus:nq6asw;Del:Delphinus:nuc7eo;Dor:Dorado:5wi208;Dra:Draco:kpubvs;Equ:Equuleus:opl7ty;Eri:Eridanus:41u5k0;For:Fornax:34i4s8;Gem:Gemini:89x8ra;Gru:Grus:qe03qq;Her:Hercules:jk69n8;Hor:Horologium:3xo2xk;Hya:Hydra:bko58w;Hyi:Hydrus:2nu1e0;Ind:Indus:ojc2nu;Lac:Lacerta:qe0akk;Leo:Leo:c9o83o;LMi:Leo Minor:c5i99c;Lep:Lepus:6tu50k;Lib:Libra:hto4xs;Lup:Lupus:hnf48s;Lyn:Lynx:9diaq4;Lyr:Lyra:lj099c;Men:Mensa:6d60rs;Mic:Microscopium:of6438;Mon:Monoceros:8ur6hc;Mus:Musca:f1o1b8;Nor:Norma:ir02xk;Oct:Octans:n5c0rs;Oph:Ophiuchus:jwo76c;Ori:Orion:6hc7y4;Pav:Pavo:mx025s;Peg:Pegasus:pt686g;Per:Perseus:53caf0;Phe:Phoenix:19u3mk;Pic:Pictor:6d6334;Psc:Pisces:1i683o;PsA:Piscis Austrinus:pp04pg;Pup:Puppis:8kc3e8;Pyx:Pyxis:a6o53c;Ret:Reticulum:4a628k;Sge:Sagitta:mgc8c0;Sgr:Sagittarius:mki4bk;Sco:Scorpius:j7o40g;Scl:Sculptor:0464ec;Sct:Scutum:lrc5za;Ser:Serpens Caput:hxu7bw;Ser:Serpens Cauda:ln676c;Sex:Sextans:c5i6ek;Tau:Taurus:46083o;Tel:Telescopium:leu2s0;Tri:Triangulum:2309kg;TrA:Triangulum Australe:iio1qi;Tuc:Tucana:quo208;UMa:Ursa Major:cqcanc;UMi:Ursa Minor:hh6c6w;Vel:Vela:b1x3e8;Vir:Virgo:fe66mw;Vol:Volans:8kc1b8;Vul:Vulpecula:msu8kc';
+    // STAR_CATALOG_END
+
+    // Nine base-36 characters per star, see scripts/firefox-newtab-stars:
+    // RA (3, hundredths of a degree), Dec+90 (3, hundredths), V magnitude
+    // +2 (2, twentieths), B-V colour index +1 (1, tenths).
+    function decodeStarCatalog(text) {
+      const stars = [];
+      for (let i = 0; i + 9 <= text.length; i += 9) {
+        stars.push({
+          ra: parseInt(text.slice(i, i + 3), 36) / 100,
+          dec: parseInt(text.slice(i + 3, i + 6), 36) / 100 - 90,
+          mag: parseInt(text.slice(i + 6, i + 8), 36) / 20 - 2,
+          bv: parseInt(text.slice(i + 8, i + 9), 36) / 10 - 1,
+        });
+      }
+      return stars;
+    }
+
+    // "And:v1v2v3|v4v5;Ant:..." - the three-letter abbreviation, then
+    // polylines of six-character vertices (RA and Dec+90 in hundredths of
+    // a degree, base 36), '|' between polylines, ';' between figures.
+    function decodeConstellations(text) {
+      if (!text) return [];
+      return text.split(';').map((entry) => {
+        const [id, body] = entry.split(':');
+        const lines = body.split('|').map((poly) => {
+          const verts = [];
+          for (let i = 0; i + 6 <= poly.length; i += 6) {
+            verts.push({
+              ra: parseInt(poly.slice(i, i + 3), 36) / 100,
+              dec: parseInt(poly.slice(i + 3, i + 6), 36) / 100 - 90,
+            });
+          }
+          return verts;
+        });
+        return { id, lines };
+      });
+    }
+
+    // "And:Andromeda:v;Ant:Antlia:v" - abbreviation, name and one packed
+    // label vertex per figure, in the same order as the figures.
+    function decodeConstellationNames(text) {
+      if (!text) return [];
+      return text.split(';').map((entry) => {
+        const [id, name, v] = entry.split(':');
+        return {
+          id, name,
+          ra: parseInt(v.slice(0, 3), 36) / 100,
+          dec: parseInt(v.slice(3, 6), 36) / 100 - 90,
+        };
+      });
+    }
+
+    const DEG = Math.PI / 180;
+
+    function julianDay(date) {
+      return date.getTime() / 86400000 + 2440587.5;
+    }
+
+    // Local sidereal time in degrees: Greenwich mean sidereal time (Meeus
+    // 12.4) plus the east longitude.
+    function localSiderealDeg(date, lng) {
+      const d = julianDay(date) - 2451545.0;
+      const T = d / 36525;
+      const gmst = 280.46061837 + 360.98564736629 * d + 0.000387933 * T * T - T * T * T / 38710000;
+      return (((gmst + lng) % 360) + 360) % 360;
+    }
+
+    // Equatorial (degrees) to horizontal (radians). Azimuth is measured
+    // from north through east, so south is PI.
+    function toAltAz(raDeg, decDeg, lstDeg, latRad) {
+      const H = (lstDeg - raDeg) * DEG;
+      const dec = decDeg * DEG;
+      const alt = Math.asin(Math.sin(dec) * Math.sin(latRad) + Math.cos(dec) * Math.cos(latRad) * Math.cos(H));
+      const east = -Math.sin(H) * Math.cos(dec);
+      const north = Math.sin(dec) * Math.cos(latRad) - Math.cos(dec) * Math.sin(latRad) * Math.cos(H);
+      return { alt, az: Math.atan2(east, north) };
+    }
+
+    // Stereographic projection about the south horizon point, in units
+    // where due east and due west on the horizon land at x = -2 and +2
+    // and the zenith at y = 2. y is up. The scale factor is 1 at the
+    // centre and grows away from it (2 at the east/west points, 4 at
+    // 120 degrees round), so constellations near the edges are larger
+    // but the same shape.
+    function projectSky(alt, az) {
+      const dAz = az - Math.PI; // west positive: right on screen
+      const cosAlt = Math.cos(alt);
+      const k = 2 / (1 + cosAlt * Math.cos(dAz));
+      return { x: k * cosAlt * Math.sin(dAz), y: k * Math.sin(alt) };
+    }
+
+    // Where the celestial horizon sits: the median ridge line of layer4,
+    // measured from the image's alpha channel at 3.6vw below its top
+    // edge (the clock tower pokes higher than the ridge). The layer's
+    // bottom gap is whatever updateLayout() last set for the window.
+    const LAYER4_RIDGE_VW = OWN_HEIGHT_VW.l4 - 3.6;
+
+    // The frame is sized from the sky's height, not the window's width:
+    // the top edge of the window is projection y = SKY_FRAME_TOP, 81
+    // degrees up on the meridian, so the moon stays on screen even at a
+    // high winter transit (72 degrees for tonight's). The width then
+    // takes whatever azimuth fits, a little past due east and west on a
+    // 16:9 window, capped at 120 degrees either side of south on very
+    // wide ones so the corners don't stretch past all recognition.
+    const SKY_FRAME_TOP = 1.7;
+    const SKY_MAX_HALF_AZ = 120 * DEG;
+
+    function skyFrame() {
+      const W = window.innerWidth;
+      const H = window.innerHeight;
+      const l4 = parseFloat(getComputedStyle(document.documentElement).getPropertyValue('--l4-vw'));
+      const gap = Number.isFinite(l4) ? l4 : LAYERS.l4.full;
+      const horizonY = H - (gap + LAYER4_RIDGE_VW) * W / 100;
+      const edgeX = 2 * Math.tan(SKY_MAX_HALF_AZ / 2); // horizon x at the azimuth cap
+      const scale = Math.max(horizonY / SKY_FRAME_TOP, W / 2 / edgeX);
+      return { W, horizonY, cx: W / 2, scale };
+    }
+
+    // The moment the sky is drawn for: now, or today at the pinned hour
+    // when applyTime()/startTimeDemo() are driving the sky colors, so the
+    // stars sweep along with them.
+    function skyDate() {
+      if (timeOverrideHour === null) return new Date();
+      const midnight = new Date();
+      midnight.setHours(0, 0, 0, 0);
+      return new Date(midnight.getTime() + timeOverrideHour * 3600000);
+    }
+
+    function skyCoords() {
+      return lastCoords || CLEMSON_SC;
+    }
+
+    function nightSkyOpacity() {
+      if (loadSettings().nightSky === 'off') return 0;
+      const n = Math.max(0, Math.min(1, currentNight));
+      // Smoothstep rather than the raw lerp: the horizon is still orange
+      // at sunsetHour itself, so stars should stay all but invisible for
+      // the first half hour and likewise be gone well before sunrise.
+      const eased = n * n * (3 - 2 * n);
+      return eased * (NIGHT_SKY_WEATHER[lastWeatherCategory] ?? 1);
+    }
+
+    function updateNightSky() {
+      const opacity = nightSkyOpacity();
+      document.documentElement.style.setProperty('--star-opacity', opacity.toFixed(3));
+      if (opacity > 0) {
+        ensureNightSky();
+        starField.classList.remove('dormant');
+        layoutSky();
+        updateMoon();
+        scheduleShootingStar();
+      } else if (starField) {
+        // Pausing the instant the target hits zero freezes the twinkle a
+        // few seconds before the 4s fade-out finishes, at an opacity
+        // where nobody can tell.
+        starField.classList.add('dormant');
+      }
+    }
+
+    // Rough spectral tint from the B-V colour index: blue-white for the
+    // hot O/B stars, through white, to the orange of Betelgeuse, Antares
+    // and Aldebaran. Only the brightest are big enough to show it.
+    function starColor(bv) {
+      if (bv < -0.05) return '#B5CCFF';
+      if (bv < 0.3) return '#DCE6FF';
+      if (bv < 0.6) return '#F6F7FF';
+      if (bv < 1.0) return '#FFF3D6';
+      if (bv < 1.5) return '#FFD9A3';
+      return '#FFBA7A';
+    }
+
+    function ensureNightSky() {
+      if (starField) return;
+      const scene = document.querySelector('.scene');
+
+      starData = decodeStarCatalog(STAR_CATALOG);
+      starField = document.createElement('div');
+      starField.id = 'star-field';
+
+      // Constellation figures go in first so the stars paint over them.
+      constellationData = decodeConstellations(CONSTELLATION_LINES);
+      const names = decodeConstellationNames(CONSTELLATION_NAMES);
+      constellationData.forEach((figure, i) => {
+        const entry = names[i] && names[i].id === figure.id ? names[i] : null;
+        figure.name = entry ? entry.name : figure.id;
+        figure.label = entry; // preferred label point, or null
+      });
+      linesSvg = document.createElementNS(SVG_NS, 'svg');
+      linesSvg.id = 'constellation-lines';
+      constellationPaths = constellationData.map((figure) => {
+        const path = document.createElementNS(SVG_NS, 'path');
+        path.dataset.id = figure.id;
+        linesSvg.appendChild(path);
+        return path;
+      });
+      // Labels after every path so they sit on top of the lines.
+      constellationLabels = constellationData.map((figure) => {
+        const text = document.createElementNS(SVG_NS, 'text');
+        text.textContent = figure.name;
+        text.setAttribute('text-anchor', 'middle');
+        text.style.display = 'none';
+        linesSvg.appendChild(text);
+        return text;
+      });
+      starField.appendChild(linesSvg);
+
+      const frag = document.createDocumentFragment();
+      starEls = starData.map((star, i) => {
+        const el = document.createElement('div');
+        // Size and brightness from magnitude: Sirius over 4px with a halo,
+        // the constellation-drawing second and third magnitudes a couple
+        // of pixels with a faint one, the mag 5 tail a single dim pixel.
+        const size = Math.max(1.1, Math.min(4.4, 3.5 - 0.5 * star.mag));
+        const base = Math.max(0.45, Math.min(1, 1.05 - 0.14 * (star.mag - 1)));
+        el.className = 'star'
+          + (star.mag < 1.6 ? ' bright' : star.mag < 3 ? ' mid' : '')
+          + (star.mag < 3.5 && Math.random() < 0.4 ? ' twinkle' : '')
+          + (STAR_NAMES[i] ? ' named' : '');
+        if (STAR_NAMES[i]) el.title = STAR_NAMES[i];
+        el.style.width = el.style.height = `${size.toFixed(1)}px`;
+        el.style.background = starColor(star.bv);
+        el.style.setProperty('--star-base', base.toFixed(2));
+        el.style.setProperty('--twinkle-dur', `${(2.5 + Math.random() * 4).toFixed(1)}s`);
+        el.style.animationDelay = `${(-Math.random() * 6).toFixed(1)}s`;
+        el.hidden = true; // until layoutSky() finds it above the horizon
+        frag.appendChild(el);
+        return el;
+      });
+      starField.appendChild(frag);
+      scene.appendChild(starField);
+
+      moonEl = document.createElement('div');
+      moonEl.id = 'moon';
+      moonEl.hidden = true;
+      scene.appendChild(moonEl);
+    }
+
+    // Place every star and the moon for skyDate() at skyCoords(). Runs on
+    // each sky update (once a minute) and on resize; ~1600 stars take well
+    // under a millisecond. Stars below the ridge or behind the viewer
+    // are hidden rather than moved off-screen so they cost no layout.
+    function layoutSky({ instant = false } = {}) {
+      if (!starField) return;
+      const date = skyDate();
+      const { lat, lng } = skyCoords();
+      const latRad = lat * DEG;
+      const lst = localSiderealDeg(date, lng);
+      const { W, horizonY, cx, scale } = skyFrame();
+
+      // margin: how far outside the window a point may land and still
+      // count. Stars need almost none; line vertices get half a window,
+      // so a figure's edge segments run off screen instead of stopping
+      // at the last vertex that was inside.
+      const place = (raDeg, decDeg, margin = 20) => {
+        const { alt, az } = toAltAz(raDeg, decDeg, lst, latRad);
+        if (alt < -0.5 * DEG) return null;
+        const { x, y } = projectSky(alt, az);
+        const px = cx + x * scale;
+        const py = horizonY - y * scale;
+        // The sky behind the viewer projects to huge or infinite
+        // coordinates (the north point itself is the pole of the
+        // projection), so the bounds check is also the back-cull.
+        if (!Number.isFinite(px) || !Number.isFinite(py)) return null;
+        if (px < -margin || px > W + margin || py < -margin) return null;
+        return { px, py };
+      };
+
+      for (let i = 0; i < starEls.length; i++) {
+        const pos = place(starData[i].ra, starData[i].dec);
+        const el = starEls[i];
+        el.hidden = !pos;
+        if (!pos) continue;
+        el.style.left = `${pos.px.toFixed(1)}px`;
+        el.style.top = `${pos.py.toFixed(1)}px`;
+      }
+
+      // Each figure becomes one path: a segment is drawn only between
+      // two consecutive vertices that both placed, so figures stop at
+      // the ridge rather than diving under it. The SVG root isn't an
+      // HTML element, so it's hidden through style, not `hidden`.
+      // 'on' is what the setting stored before names existed.
+      const mode = loadSettings().constellations || 'lines';
+      const showLines = mode !== 'off';
+      const showNames = mode === 'names';
+      linesSvg.style.display = showLines ? '' : 'none';
+      if (showLines) {
+        const H = window.innerHeight;
+        const lineMargin = Math.max(W, H) / 2;
+        for (let c = 0; c < constellationData.length; c++) {
+          const figure = constellationData[c];
+          let d = '';
+          let sumX = 0, sumY = 0, placed = 0;
+          for (const poly of figure.lines) {
+            let penDown = false;
+            for (const v of poly) {
+              const pos = place(v.ra, v.dec, lineMargin);
+              if (!pos) { penDown = false; continue; }
+              d += (penDown ? 'L' : 'M') + pos.px.toFixed(1) + ' ' + pos.py.toFixed(1);
+              penDown = true;
+              sumX += pos.px; sumY += pos.py; placed++;
+            }
+          }
+          constellationPaths[c].setAttribute('d', d);
+
+          // The name goes at the catalog's label point when that is on
+          // screen, otherwise at the middle of whichever vertices did
+          // place, so a figure half-set behind the ridge is still
+          // named. A lone vertex is a sliver, not a figure: no label.
+          const label = constellationLabels[c];
+          let at = null;
+          if (showNames && placed >= 2) {
+            at = (figure.label && place(figure.label.ra, figure.label.dec, 0))
+              || { px: sumX / placed, py: sumY / placed };
+            if (at.px < 0 || at.px > W || at.py < 0 || at.py > horizonY) at = null;
+          }
+          label.style.display = at ? '' : 'none';
+          if (at) {
+            label.setAttribute('x', at.px.toFixed(1));
+            label.setAttribute('y', at.py.toFixed(1));
+          }
+        }
+      }
+
+      const moon = moonState(date);
+      const pos = place(moon.raDeg, moon.decDeg);
+      moonEl.hidden = !pos;
+      if (pos) {
+        // The moon's 60s transform transition is for its real drift; a
+        // resize should snap it, not send it gliding across the window.
+        if (instant) moonEl.style.transition = 'none';
+        moonEl.style.setProperty('--moon-x', pos.px.toFixed(1));
+        moonEl.style.setProperty('--moon-y', pos.py.toFixed(1));
+        if (instant) {
+          void moonEl.offsetWidth; // commit the snapped position first
+          moonEl.style.transition = '';
+        }
+      }
+    }
+
+    window.addEventListener('resize', () => layoutSky({ instant: true }));
+
+    // Moon: the Astronomical Almanac's low-precision series (the leading
+    // terms of Meeus ch. 47) for ecliptic longitude and latitude, good to
+    // about a third of a degree - a couple of pixels here - plus the sun's
+    // longitude so the phase comes from the true elongation rather than a
+    // mean cycle. Topocentric parallax (under a degree) is ignored; the
+    // disc is drawn many times its real size anyway.
+    function moonState(date) {
+      const d = julianDay(date) - 2451545.0;
+      const wrap = (deg) => (((deg % 360) + 360) % 360) * DEG;
+      const L0 = wrap(218.3164477 + 13.17639648 * d); // mean longitude
+      const l = wrap(134.9633964 + 13.06499295 * d);  // mean anomaly
+      const M = wrap(357.5291092 + 0.98560028 * d);   // sun's mean anomaly
+      const F = wrap(93.2720950 + 13.22935024 * d);   // argument of latitude
+      const D = wrap(297.8501921 + 12.19074912 * d);  // mean elongation
+      const lon = L0 + DEG * (
+        6.289 * Math.sin(l) - 1.274 * Math.sin(l - 2 * D) + 0.658 * Math.sin(2 * D)
+        + 0.214 * Math.sin(2 * l) - 0.186 * Math.sin(M) - 0.114 * Math.sin(2 * F));
+      const lat = DEG * (
+        5.128 * Math.sin(F) + 0.281 * Math.sin(l + F) + 0.278 * Math.sin(l - F)
+        + 0.173 * Math.sin(2 * D - F) + 0.055 * Math.sin(2 * D - l + F) + 0.046 * Math.sin(2 * D - l - F));
+      const sunLon = wrap(280.459 + 0.98564736 * d) + DEG * (1.915 * Math.sin(M) + 0.020 * Math.sin(2 * M));
+      const eps = (23.4393 - 0.0000004 * d) * DEG;
+      const ra = Math.atan2(Math.sin(lon) * Math.cos(eps) - Math.tan(lat) * Math.sin(eps), Math.cos(lon));
+      const dec = Math.asin(Math.sin(lat) * Math.cos(eps) + Math.cos(lat) * Math.sin(eps) * Math.sin(lon));
+      let phase = ((lon - sunLon) / (2 * Math.PI)) % 1;
+      if (phase < 0) phase += 1;
+      return { raDeg: ra / DEG, decDeg: dec / DEG, phase }; // phase: 0 new, 0.5 full
+    }
+
+    // Console hook for testing: applyMoonPhase(0.5) pins a full moon,
+    // applyMoonPhase(null) returns to the real one.
+    let moonPhaseOverride = null;
+    let renderedMoonKey = null;
+
+    function moonPhase() {
+      return moonPhaseOverride !== null ? moonPhaseOverride : moonState(skyDate()).phase;
+    }
+
+    function applyMoonPhase(phase) {
+      moonPhaseOverride = phase;
+      updateMoon();
+    }
+
+    // The four principal phases are instants, so they get a window of
+    // about a day either side; everything between is a crescent or a
+    // gibbous moon. Splitting the cycle into equal eighths instead would
+    // call a 68%-lit moon "last quarter".
+    function moonPhaseName(phase) {
+      const near = (target) => Math.abs(phase - target) < 0.035;
+      if (near(0) || near(1)) return 'New moon';
+      if (near(0.25)) return 'First quarter';
+      if (near(0.5)) return 'Full moon';
+      if (near(0.75)) return 'Last quarter';
+      if (phase < 0.25) return 'Waxing crescent';
+      if (phase < 0.5) return 'Waxing gibbous';
+      if (phase < 0.75) return 'Waning gibbous';
+      return 'Waning crescent';
+    }
+
+    // The lit shape as one SVG path. Facing south the sun is off to the
+    // right (west) after dusk and to the left (east) before dawn, so the
+    // lit limb is on the right while waxing and on the left while waning.
+    // Out along that limb from the top of the disc to the bottom, then
+    // back up along the terminator, a half-ellipse whose x-radius follows
+    // |cos(phase)|. It bulges toward the lit limb for a crescent (thin
+    // sliver) and away from it for a gibbous moon; at the quarters it
+    // collapses to a straight line (an arc with rx=0 is drawn as a line).
+    // Sweep flag 1 is clockwise on screen: top-to-bottom clockwise passes
+    // the right side, bottom-to-top clockwise passes the left.
+    function moonPathD(phase, r) {
+      const cosT = Math.cos(phase * 2 * Math.PI);
+      const litRight = phase < 0.5;
+      const bulgeRight = litRight === (cosT > 0);
+      const rx = (Math.abs(cosT) * r).toFixed(2);
+      const top = `${r} 0`;
+      const bottom = `${r} ${2 * r}`;
+      return `M ${top} A ${r} ${r} 0 0 ${litRight ? 1 : 0} ${bottom} `
+           + `A ${rx} ${r} 0 0 ${bulgeRight ? 0 : 1} ${top} Z`;
+    }
+
+    // Redraws the disc when the phase has visibly moved (about once an
+    // hour). Position is layoutSky()'s job, alongside the stars.
+    function updateMoon() {
+      if (!moonEl) return;
+      const phase = moonPhase();
+      const key = Math.round(phase * 720);
+      if (key === renderedMoonKey) return;
+      renderedMoonKey = key;
+      const r = 20;
+      moonEl.innerHTML =
+        `<svg viewBox="0 0 ${2 * r} ${2 * r}" aria-hidden="true">`
+        + `<circle cx="${r}" cy="${r}" r="${r}" fill="rgba(255, 255, 255, 0.07)"></circle>`
+        + `<path d="${moonPathD(phase, r)}" fill="#F4ECD6"></path>`
+        + '</svg>';
+      const lit = Math.round((1 - Math.cos(phase * 2 * Math.PI)) / 2 * 100);
+      moonEl.title = `${moonPhaseName(phase)} · ${lit}% lit`;
+    }
+
+    // One pending timer at most. The first streak comes within seconds so
+    // a lingering tab has a fair chance of catching it; after one has
+    // actually been seen they turn rare, as they should be. A tick that
+    // lands while the tab is hidden (new tabs are preloaded hidden) or
+    // the sky has brightened spawns nothing and doesn't count.
+    function scheduleShootingStar() {
+      if (shootingStarTimer !== null || reducedMotion.matches) return;
+      const seconds = shootingStarsSeen === 0 ? 4 + Math.random() * 8 : 30 + Math.random() * 60;
+      shootingStarTimer = setTimeout(() => {
+        shootingStarTimer = null;
+        if (document.visibilityState === 'visible' && nightSkyOpacity() > 0.2) {
+          spawnShootingStar();
+          shootingStarsSeen++;
+        }
+        if (nightSkyOpacity() > 0) scheduleShootingStar();
+      }, seconds * 1000);
+    }
+
+    function spawnShootingStar() {
+      ensureNightSky();
+      const streak = document.createElement('div');
+      streak.className = 'shooting-star';
+      // Starts somewhere in the upper sky and heads down-left or
+      // down-right; the angle is measured clockwise from horizontal, so
+      // 180 minus it mirrors the flight.
+      const goingRight = Math.random() < 0.5;
+      const pitch = 18 + Math.random() * 22;
+      streak.style.left = `${(goingRight ? 5 + Math.random() * 50 : 45 + Math.random() * 50).toFixed(1)}%`;
+      streak.style.top = `${(3 + Math.random() * 30).toFixed(1)}%`;
+      streak.style.setProperty('--shoot-angle', `${(goingRight ? pitch : 180 - pitch).toFixed(1)}deg`);
+      streak.style.setProperty('--shoot-dist', `${Math.round(25 + Math.random() * 25)}vw`);
+      streak.style.animationDuration = `${(0.7 + Math.random() * 0.5).toFixed(2)}s`;
+      streak.addEventListener('animationend', () => streak.remove());
+      starField.appendChild(streak);
+    }
 
     // ---- Settings panel -------------------------------------------------
     // Preferences behind the gear in the bottom-left corner. Stored as a
@@ -943,6 +1475,35 @@
         // or brings them back, without another fetch.
         apply: (id, isInit) => {
           if (!isInit) applyWeatherFX(lastWeatherCategory);
+        },
+      },
+      {
+        key: 'nightSky',
+        label: 'Night sky',
+        fallback: 'on',
+        options: [
+          { id: 'on', label: 'On' },
+          { id: 'off', label: 'Off' },
+        ],
+        // The first updateSky() call runs right after this loop and reads
+        // the setting itself; only a live toggle needs a repaint here.
+        apply: (id, isInit) => {
+          if (!isInit) updateNightSky();
+        },
+      },
+      {
+        key: 'constellations',
+        label: 'Constellations',
+        fallback: 'lines',
+        options: [
+          { id: 'off', label: 'Off' },
+          { id: 'lines', label: 'Lines' },
+          { id: 'names', label: 'Lines and names' },
+        ],
+        // layoutSky() reads the setting; it's a no-op until the night
+        // sky has been built.
+        apply: (id, isInit) => {
+          if (!isInit) layoutSky();
         },
       },
       {
@@ -1114,8 +1675,11 @@
       group.apply(active, true);
     }
 
-    // Kick off sky + weather now that the stored location setting is
-    // readable. Deliberately after the loop so it runs exactly once.
+    // Kick off sky + weather now that the stored settings are readable
+    // (the night sky reads them on every sky update). Deliberately after
+    // the loop so each runs exactly once.
+    updateSky();
+    setInterval(updateSky, 60000);
     startLocation();
 
 
