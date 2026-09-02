@@ -366,6 +366,66 @@
     100% { opacity: 0;    transform: translateY(-28px) scale(1)   rotate(var(--paw-rot, 0deg)); }
   }
 
+  /* The saucer (spawnUfo in the script). .ufo flies the path, .ufo-bob
+     hovers up and down the whole time, .ufo-tilt leans into the
+     direction of travel - three wrappers because each is its own
+     transform. z-index 15 puts it above the clouds (10) and behind the
+     skyline (20), so it can duck behind the clock tower on its way out. */
+  .ufo {
+    position: absolute;
+    top: 0;
+    left: 0;
+    z-index: 15;
+    width: clamp(36px, 3.6vw, 64px);
+    aspect-ratio: 2;
+    pointer-events: none;
+  }
+
+  .ufo-bob {
+    animation: ufo-bob 1.6s ease-in-out infinite;
+  }
+
+  .ufo-tilt {
+    position: relative;
+    transform-origin: 50% 60%;
+  }
+
+  .ufo svg {
+    display: block;
+    width: 100%;
+    height: auto;
+    filter: drop-shadow(0 0 6px rgba(170, 255, 220, 0.35));
+  }
+
+  .ufo-light {
+    animation: ufo-blink 1.2s ease-in-out infinite;
+  }
+
+  /* A cone of light under the hull, faded in by the script only while
+     it hovers. Sits before the svg in the DOM so the hull paints over
+     its top edge. */
+  .ufo-beam {
+    position: absolute;
+    left: 50%;
+    top: 70%;
+    width: 170%;
+    height: 320%;
+    transform: translateX(-50%);
+    background: linear-gradient(to bottom, rgba(170, 255, 220, 0.45), rgba(170, 255, 220, 0));
+    clip-path: polygon(40% 0, 60% 0, 100% 100%, 0 100%);
+    opacity: 0;
+  }
+
+  @keyframes ufo-bob {
+    0%, 100% { transform: translateY(0); }
+    50%      { transform: translateY(-3px); }
+  }
+
+  @keyframes ufo-blink {
+    0%, 100% { opacity: 0.25; }
+    50%      { opacity: 1; }
+  }
+
   /* Orange wash sits at z-index 5: above the sky gradient, below every
      layer (layer4 is 20) and below all the text. Tinting the sky reads as
      atmosphere; tinting the bookmark cards would just look broken. */

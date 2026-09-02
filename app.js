@@ -1123,6 +1123,8 @@
       moonEl = document.createElement('div');
       moonEl.id = 'moon';
       moonEl.hidden = true;
+      // Like the paw: something you can click that doesn't look like it.
+      moonEl.addEventListener('click', () => spawnUfo());
       scene.appendChild(moonEl);
     }
 
@@ -1339,7 +1341,10 @@
       shootingStarTimer = setTimeout(() => {
         shootingStarTimer = null;
         if (document.visibilityState === 'visible' && nightSkyOpacity() > 0.2) {
-          spawnShootingStar();
+          // Every so often the streak is something else entirely - but
+          // never the first thing a tab shows, so it stays a rumour.
+          if (shootingStarsSeen > 0 && Math.random() < 0.04) spawnUfo();
+          else spawnShootingStar();
           shootingStarsSeen++;
         }
         if (nightSkyOpacity() > 0) scheduleShootingStar();
@@ -2109,6 +2114,69 @@
       }
     }
 
+    // A flying saucer. Summoned by clicking the moon, by asking the search
+    // box to take you to its leader, or - rarely - by itself on a clear
+    // night (see scheduleShootingStar). It comes in from one side, stops
+    // over something for a moment with its beam on, then leaves in a
+    // hurry. Lives in .scene at z-index 15 - above the clouds, behind the
+    // skyline - and outside #star-field, so it isn't dimmed with the
+    // stars and can be summoned by day from the console. One at a time:
+    // a second summons while one is on screen is ignored. Three nested
+    // wrappers because the flight path, the constant bobbing and the
+    // lean into the turn are each their own transform.
+    function spawnUfo({ duration = 7000 } = {}) {
+      if (reducedMotion.matches || document.querySelector('.ufo')) return;
+      const scene = document.querySelector('.scene');
+      const ufo = document.createElement('div');
+      ufo.className = 'ufo';
+      const lights = [['10', '#FF6B6B'], ['21', '#FFD166'], ['32', '#6BFFB8'], ['43', '#6BC9FF'], ['54', '#FF8BE6']]
+        .map(([x, color], i) => `<circle class="ufo-light" cx="${x}" cy="21.5" r="1.7" fill="${color}" style="animation-delay: ${(-i * 0.24).toFixed(2)}s"></circle>`)
+        .join('');
+      ufo.innerHTML =
+        '<div class="ufo-bob"><div class="ufo-tilt">'
+        + '<div class="ufo-beam"></div>'
+        + '<svg viewBox="0 0 64 32" aria-hidden="true">'
+        + '<ellipse cx="32" cy="12" rx="10" ry="8.5" fill="rgba(190, 240, 255, 0.55)" stroke="rgba(230, 250, 255, 0.9)" stroke-width="0.8"></ellipse>'
+        + '<ellipse cx="29" cy="9" rx="3.5" ry="2" fill="rgba(255, 255, 255, 0.55)"></ellipse>'
+        + '<ellipse cx="32" cy="19.5" rx="29" ry="6.5" fill="#6F778A"></ellipse>'
+        + '<ellipse cx="32" cy="18" rx="29" ry="5" fill="#AEB6C6"></ellipse>'
+        + '<ellipse cx="32" cy="17" rx="22" ry="2.6" fill="rgba(255, 255, 255, 0.25)"></ellipse>'
+        + '<ellipse cx="32" cy="24" rx="12" ry="1.8" fill="rgba(170, 255, 220, 0.35)"></ellipse>'
+        + lights
+        + '</svg></div></div>';
+      scene.appendChild(ufo);
+
+      // Left to right or right to left, a stop somewhere in the middle of
+      // the sky, and an exit that climbs and accelerates.
+      const dir = Math.random() < 0.5 ? 1 : -1;
+      const y = 12 + Math.random() * 24;
+      const hoverX = 30 + Math.random() * 40;
+      const at = (x, dy = 0) => `translate(${x}vw, ${(y + dy).toFixed(1)}vh)`;
+      const flight = ufo.animate([
+        { transform: at(dir > 0 ? -12 : 112), easing: 'cubic-bezier(0.2, 0.8, 0.4, 1)' },
+        { transform: at(hoverX, 3), offset: 0.32, easing: 'linear' },
+        { transform: at(hoverX + dir * 1.5, 3), offset: 0.62, easing: 'cubic-bezier(0.7, 0, 1, 0.6)' },
+        { transform: at(dir > 0 ? 116 : -16, -12) },
+      ], { duration, fill: 'forwards' });
+      ufo.querySelector('.ufo-tilt').animate([
+        { transform: `rotate(${dir * 9}deg)`, easing: 'ease-out' },
+        { transform: 'rotate(0deg)', offset: 0.32 },
+        { transform: 'rotate(0deg)', offset: 0.62, easing: 'ease-in' },
+        { transform: `rotate(${dir * 12}deg)` },
+      ], { duration, fill: 'forwards' });
+      ufo.querySelector('.ufo-beam').animate([
+        { opacity: 0, offset: 0 },
+        { opacity: 0, offset: 0.34 },
+        { opacity: 1, offset: 0.42 },
+        { opacity: 1, offset: 0.55 },
+        { opacity: 0, offset: 0.62 },
+        { opacity: 0, offset: 1 },
+      ], { duration, fill: 'forwards' });
+      const leave = () => ufo.remove();
+      flight.finished.then(leave, leave);
+      setTimeout(leave, duration + 1000); // in case the tab was hidden throughout
+    }
+
     let orangeWashTimer = null;
 
     function flashOrange(ms = 4500) {
@@ -2177,6 +2245,7 @@
       'go tigers':    () => pawBurst(18),
       'solid orange': () => flashOrange(),
       'death valley': () => applyWeatherFX('storm'),
+      'take me to your leader': () => spawnUfo(),
     };
 
     document.getElementById('search-form').addEventListener('submit', (event) => {
