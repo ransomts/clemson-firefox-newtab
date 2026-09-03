@@ -1,0 +1,351 @@
+#!/usr/bin/env python3
+"""Headless smoke test for the new-tab page.
+
+Stages index.html, style.css, app.js, resources/ and bookmarks.json into
+a temporary directory next to a set of test pages - the real shell with a
+pinned clock and a block of assertions appended after app.js - serves
+them on a loopback port, loads each page in a headless Firefox with a
+throwaway profile, and collects the assertion results, which the page
+POSTs back to the same server. Screenshots of every page land in --out
+for eyeballing; the assertions catch what a screenshot can't.
+
+    scripts/firefox-newtab-smoke               # run every test
+    scripts/firefox-newtab-smoke -k moon -k ufo # only tests whose name matches
+    scripts/firefox-newtab-smoke --list
+    scripts/firefox-newtab-smoke --keep        # leave the staging dir behind
+
+Exit status is 1 if any check fails or any page reports a script error.
+Needs a `firefox` on PATH (or --firefox); a first run in a fresh profile
+takes a few seconds per page. Weather comes from Open-Meteo if the
+network allows and is otherwise absent - the tests don't depend on it.
+"""
+import argparse
+import http.server
+import json
+import os
+import pathlib
+import shutil
+import subprocess
+import sys
+import tempfile
+import threading
+
+ROOT = pathlib.Path(__file__).resolve().parent.parent
+PAGE_FILES = ['index.html', 'style.css', 'app.js', 'resources', 'bookmarks.json', 'bookmarks.example.json']
+
+# Runs after app.js on every test page. report() ships the checks back;
+# settle() is three microtask hops, enough for an animation's finished
+# promise to have fired its handlers. The submit listener sits after the
+# page's own, so it can tell whether the page swallowed a search before it
+# stops the real navigation that would otherwise abort the screenshot.
+PRELUDE = r"""
+(() => {
+  const errors = [];
+  window.addEventListener('error', (e) => errors.push(e.message + ' @' + e.lineno));
+  window.__smoke = {
+    errors,
+    submitPrevented: null,
+    report(checks) {
+      return fetch('/report', {
+        method: 'POST', keepalive: true, headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name: __SMOKE_NAME__, checks, errors }),
+      }).catch(() => {});
+    },
+    settle() { return Promise.resolve().then(() => {}).then(() => {}).then(() => {}); },
+    finite() { return document.getAnimations().filter((a) => a.effect.getTiming().iterations !== Infinity); },
+    opacity() { return parseFloat(getComputedStyle(document.documentElement).getPropertyValue('--star-opacity')); },
+    visibleStars() { return document.querySelectorAll('.star:not(.planet):not([hidden])').length; },
+    drawnFigures() { return [...document.querySelectorAll('#constellation-lines path')].filter((p) => p.getAttribute('d')).length; },
+    shownLabels() { return [...document.querySelectorAll('#constellation-lines text')].filter((t) => t.style.display !== 'none').length; },
+    submit(text) {
+      const input = document.getElementById('search-input');
+      input.value = text;
+      document.getElementById('search-form').dispatchEvent(new Event('submit', { cancelable: true, bubbles: true }));
+      const prevented = this.submitPrevented;
+      input.value = '';
+      return prevented;
+    },
+  };
+  document.getElementById('search-form').addEventListener('submit', (e) => {
+    window.__smoke.submitPrevented = e.defaultPrevented;
+    e.preventDefault();
+  });
+})();
+"""
+
+# Each test is the script that runs after the prelude. A check is a
+# boolean, or [boolean, detail] when the detail is worth printing.
+TESTS = {
+    'load': r"""
+      // Nothing pinned: the state the page reached on its own with the real
+      // clock. The field must exist exactly when the sky is dark.
+      const now = new Date();
+      const hour = now.getHours() + now.getMinutes() / 60;
+      const built = !!document.getElementById('star-field');
+      __smoke.report({
+        'field built iff sky is dark': [built === (__smoke.opacity() > 0), `hour=${hour.toFixed(2)} night=${currentNight.toFixed(3)} opacity=${__smoke.opacity()} built=${built} tz=${Intl.DateTimeFormat().resolvedOptions().timeZone} sunset=${SKY_KEYFRAMES[6].hour.toFixed(2)} coords=${JSON.stringify(lastCoords)}`],
+        'no script errors so far': __smoke.errors.length === 0,
+      });
+    """,
+    'day': r"""
+      applyWeather('test', 'clear');
+      applyTime(10);
+      const field = document.getElementById('star-field');
+      const moon = document.getElementById('moon');
+      const moonOpacity = getComputedStyle(document.documentElement).getPropertyValue('--moon-opacity').trim();
+      __smoke.report({
+        'star opacity is 0 by day': __smoke.opacity() === 0,
+        // The field exists only if the page loaded after dark; then it must be paused.
+        'field absent or dormant by day': !field || field.classList.contains('dormant'),
+        'moon exists by day': !!moon,
+        'moon faint by day under clear sky': [moonOpacity === '0.450', moonOpacity],
+        'moon above the horizon at 10am (date dependent, informational)': [true, !moon.hidden],
+        'settings panel lists the night sky': /Night sky/.test(document.getElementById('settings-panel').textContent),
+        'settings panel lists constellations': /Constellations/.test(document.getElementById('settings-panel').textContent),
+      });
+    """,
+    'night': r"""
+      applyTime(23);
+      const stars = __smoke.visibleStars();
+      __smoke.report({
+        'star field built after dark': !!document.getElementById('star-field'),
+        'star opacity is 1': __smoke.opacity() === 1,
+        'a few hundred stars are up': [stars > 150 && stars < 900, stars],
+        'named stars carry titles': document.querySelectorAll('.star.named[title]').length > 50,
+        'constellation figures drawn': [__smoke.drawnFigures() > 10, __smoke.drawnFigures()],
+        'labels off by default': __smoke.shownLabels() === 0,
+        'moon element exists': !!document.getElementById('moon'),
+        'star field hidden from assistive tech': document.getElementById('star-field').getAttribute('aria-hidden') === 'true',
+        'five planets exist': document.querySelectorAll('.planet').length === 5,
+        'planets never twinkle': document.querySelectorAll('.planet.twinkle').length === 0,
+        'planets carry names': [...document.querySelectorAll('.planet:not([hidden])')].every((p) => /mag/.test(p.title)),
+        'planets up right now (date dependent, informational)': [true, [...document.querySelectorAll('.planet:not([hidden])')].map((p) => p.title).join(', ') || 'none'],
+      });
+    """,
+    'names': r"""
+      saveSettings({ constellations: 'names' }); applyTime(23);
+      const withNames = __smoke.shownLabels();
+      saveSettings({ constellations: 'lines' }); layoutSky();
+      const linesOnly = __smoke.shownLabels();
+      saveSettings({ constellations: 'off' }); layoutSky();
+      const svgHidden = document.getElementById('constellation-lines').style.display === 'none';
+      saveSettings({ constellations: 'on' }); layoutSky();
+      __smoke.report({
+        'names shown when chosen': [withNames > 5, withNames],
+        'names hidden for lines only': linesOnly === 0,
+        'figures hidden when off': svgHidden,
+        'legacy "on" still means lines': document.getElementById('constellation-lines').style.display === '' && __smoke.shownLabels() === 0,
+        'a name survived UTF-8': [...document.querySelectorAll('#constellation-lines text')].some((t) => t.textContent === 'Boötes'),
+      });
+    """,
+    'weather': r"""
+      applyTime(23);
+      const at = (cat, cover) => { applyWeather('test', cat, cover); return __smoke.opacity(); };
+      __smoke.report({
+        'storm hides the sky': at('storm') === 0,
+        'fog hides the sky': at('fog') === 0,
+        'cloudy without a cover figure dims to 0.35': at('cloudy') === 0.35,
+        'clear is full': at('clear') === 1,
+        'half cover leaves two thirds': [at('cloudy', 50) === 0.682, at('cloudy', 50)],
+        'full cover leaves a tenth': at('cloudy', 100) === 0.1,
+        'clear sky with no cover is full': at('clear', 0) === 1,
+        'cover figure ignored under rain': at('rain', 20) === 0,
+        'clear again before the setting checks': at('clear') === 1,
+        'settings off hides the sky': (saveSettings({ nightSky: 'off' }), updateNightSky(), __smoke.opacity() === 0),
+        'settings on restores it': (saveSettings({ nightSky: 'on' }), updateNightSky(), __smoke.opacity() === 1),
+      });
+    """,
+    'demo': r"""
+      startTimeDemo(); stopTimeDemo();
+      const cleared = timeOverrideHour === null;
+      applyTime(23);
+      const before = __smoke.visibleStars();
+      window.dispatchEvent(new Event('resize'));
+      __smoke.report({
+        'demo start/stop clears the override': cleared,
+        'resize keeps the field': __smoke.visibleStars() === before,
+      });
+    """,
+    'moon': r"""
+      applyTime(2);
+      const moon = document.getElementById('moon');
+      const up = !moon.hidden;
+      const realTitle = moon.title;
+      applyMoonPhase(0.5); const full = moon.title;
+      applyMoonPhase(0.03); const fresh = moon.title;
+      applyMoonPhase(null);
+      __smoke.report({
+        'moon element positioned': !!moon,
+        'title names the phase': [/lit/.test(realTitle), realTitle],
+        'pinned full moon': [/Full moon/.test(full), full],
+        'pinned new moon': [/New moon/.test(fresh), fresh],
+        'moon above the horizon at 2am (date dependent, informational)': [true, up],
+      });
+    """,
+    'meteors': r"""
+      applyDate(new Date(2026, 7, 12, 23, 30)); // Perseid maximum
+      const shower = activeShower();
+      spawnShootingStar();
+      const streak = document.querySelector('.shooting-star');
+      const px = streak && /px$/.test(streak.style.left);
+      applyDate(new Date(2026, 8, 25, 23, 0)); // nothing on
+      const quiet = activeShower();
+      applyDate(null);
+      __smoke.report({
+        'Perseids active at their peak': [shower && shower.name === 'Perseids' && shower.strength > 0.8, shower && `${shower.name} ${shower.strength.toFixed(2)}`],
+        'streak flies away from the radiant (pixel start)': [!!streak && px, px ? 'radiant' : 'sporadic'],
+        'streak has a bearing': !!streak && /deg$/.test(streak.style.getPropertyValue('--shoot-angle')),
+        'late September has no shower': quiet === null,
+        'date override clears': timeOverrideHour === null && skyDate().getFullYear() === new Date().getFullYear(),
+      });
+    """,
+    'ufo': r"""
+      applyTime(2);
+      const count = () => document.querySelectorAll('.ufo').length;
+      document.getElementById('moon').dispatchEvent(new MouseEvent('click', { bubbles: true }));
+      const afterClick = count();
+      spawnUfo();
+      const afterSecond = count();
+      __smoke.finite().forEach((a) => a.finish());
+      __smoke.settle().then(() => {
+        const afterFinish = count();
+        const spell = __smoke.submit('Take me to your leader');
+        const afterSpell = count();
+        const real = __smoke.submit('ufo sightings');
+        document.getAnimations().forEach((a) => { a.pause(); a.currentTime = 3300; });
+        __smoke.report({
+          'moon click summons one': afterClick === 1,
+          'second summons ignored while flying': afterSecond === 1,
+          'saucer leaves when the flight ends': afterFinish === 0,
+          'search spell is swallowed and summons': spell === true && afterSpell === 1,
+          'a real search still submits': real === false,
+          'five rim lights and a beam': document.querySelectorAll('.ufo-light').length === 5 && !!document.querySelector('.ufo-beam'),
+          'beam lit mid-hover': getComputedStyle(document.querySelector('.ufo-beam')).opacity === '1',
+          'sits above clouds, behind skyline': getComputedStyle(document.querySelector('.ufo')).zIndex === '15',
+        });
+      });
+    """,
+}
+
+
+class Results:
+    def __init__(self):
+        self.by_name = {}
+        self.lock = threading.Lock()
+
+
+def make_handler(staging, results):
+    class Handler(http.server.SimpleHTTPRequestHandler):
+        def __init__(self, *args, **kwargs):
+            super().__init__(*args, directory=str(staging), **kwargs)
+
+        def log_message(self, *args):
+            pass
+
+        def do_POST(self):
+            if self.path != '/report':
+                self.send_error(404)
+                return
+            length = int(self.headers.get('Content-Length', 0))
+            payload = json.loads(self.rfile.read(length))
+            with results.lock:
+                results.by_name[payload['name']] = payload
+            self.send_response(204)
+            self.end_headers()
+
+    return Handler
+
+
+def stage(root, staging):
+    for name in PAGE_FILES:
+        src = root / name
+        if src.exists():
+            os.symlink(src, staging / name)
+
+
+def write_page(root, staging, name, script):
+    html = (root / 'index.html').read_text(encoding='utf-8')
+    tag = '<script src="app.js"></script>'
+    if tag not in html:
+        sys.exit('index.html no longer loads app.js the way this harness expects')
+    body = PRELUDE.replace('__SMOKE_NAME__', json.dumps(name)) + '\n' + script
+    (staging / f'{name}.html').write_text(html.replace(tag, tag + '<script>' + body + '</script>'), encoding='utf-8')
+
+
+def run_firefox(firefox, profile, url, png, timeout):
+    cmd = [firefox, '--headless', '--new-instance', '--profile', str(profile),
+           '--window-size=1600,900', '--screenshot', str(png), url]
+    try:
+        subprocess.run(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=timeout, check=False)
+    except subprocess.TimeoutExpired:
+        return False
+    return png.exists()
+
+
+def main():
+    ap = argparse.ArgumentParser(description=__doc__.split('\n')[0])
+    ap.add_argument('-k', '--match', action='append', default=[], help='only run tests whose name contains this (repeatable)')
+    ap.add_argument('--list', action='store_true', help='list test names and exit')
+    ap.add_argument('--firefox', default=shutil.which('firefox'), help='firefox binary (default: from PATH)')
+    ap.add_argument('--out', default='/tmp/firefox-newtab-smoke', help='where screenshots go')
+    ap.add_argument('--keep', action='store_true', help='keep the staging directory')
+    ap.add_argument('--timeout', type=int, default=90, help='seconds per page')
+    args = ap.parse_args()
+
+    if args.list:
+        print('\n'.join(TESTS))
+        return 0
+    if not args.firefox:
+        sys.exit('no firefox found; pass --firefox')
+    names = [n for n in TESTS if not args.match or any(m in n for m in args.match)]
+    if not names:
+        sys.exit('no tests match')
+
+    out = pathlib.Path(args.out)
+    out.mkdir(parents=True, exist_ok=True)
+    staging = pathlib.Path(tempfile.mkdtemp(prefix='firefox-newtab-smoke-'))
+    results = Results()
+    server = http.server.ThreadingHTTPServer(('127.0.0.1', 0), make_handler(staging, results))
+    port = server.server_address[1]
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+
+    failed = 0
+    try:
+        stage(ROOT, staging)
+        for name in names:
+            write_page(ROOT, staging, name, TESTS[name])
+            profile = staging / f'profile-{name}'
+            profile.mkdir()
+            png = out / f'{name}.png'
+            png.unlink(missing_ok=True)
+            shot = run_firefox(args.firefox, profile, f'http://127.0.0.1:{port}/{name}.html', png, args.timeout)
+            with results.lock:
+                got = results.by_name.get(name)
+            if not got:
+                failed += 1
+                print(f'FAIL {name}: no report received' + ('' if shot else ' (no screenshot either)'))
+                continue
+            bad = [k for k, v in got['checks'].items() if not (v[0] if isinstance(v, list) else v)]
+            errs = got['errors']
+            status = 'FAIL' if bad or errs else 'PASS'
+            if status == 'FAIL':
+                failed += 1
+            print(f'{status} {name}' + ('' if shot else '  (screenshot missing)'))
+            for k, v in got['checks'].items():
+                ok, detail = (v[0], v[1]) if isinstance(v, list) else (v, None)
+                mark = '  ok ' if ok else '  XX '
+                print(f'{mark} {k}' + (f': {detail}' if detail is not None else ''))
+            for e in errs:
+                print(f'  XX script error: {e}')
+    finally:
+        server.shutdown()
+        if args.keep:
+            print(f'staging kept at {staging}')
+        else:
+            shutil.rmtree(staging, ignore_errors=True)
+    print(f'\n{len(names) - failed}/{len(names)} passed; screenshots in {out}')
+    return 1 if failed else 0
+
+
+if __name__ == '__main__':
+    sys.exit(main())

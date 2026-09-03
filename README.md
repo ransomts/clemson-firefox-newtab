@@ -450,12 +450,17 @@ so nothing stale can ever be cached. A few starting points:
   (packed by the same script into `CONSTELLATION_LINES` and
   `CONSTELLATION_NAMES`, drawn as one SVG path and label each; the
   "Constellations" setting picks off, lines, or lines and names). The
-  moon is placed by a low-precision ephemeris
-  (`moonState()`) and its phase drawn from the true elongation
-  (`moonPathD()`). From the console, `applyTime(23)` shows tonight's
-  sky at 11pm, `startTimeDemo()` sweeps it across a whole night, and
-  `applyMoonPhase(0.5)` pins a full moon (`applyMoonPhase(null)` to
-  release it).
+  moon is placed by a low-precision ephemeris (`moonState()`) and its
+  phase drawn from the true elongation (`moonPathD()`). From the
+  console, `applyTime(23)` shows tonight's sky at 11pm,
+  `startTimeDemo()` sweeps a whole night, and `applyMoonPhase(0.5)`
+  pins a full moon (`applyMoonPhase(null)` to release it).
+- **Smoke tests** — `scripts/firefox-newtab-smoke` stages the page,
+  serves it on a loopback port, loads a set of test pages (the real
+  shell with a pinned clock and assertions appended) in a headless
+  Firefox, and prints the assertions the pages post back, with a
+  screenshot of each in `/tmp/firefox-newtab-smoke`. Run it after any
+  change to the page; `-k name` runs a subset.
 - **Testing time-of-day changes quickly** — open the browser console and
   call `startTimeDemo()` to rapidly cycle through a full day (`stopTimeDemo()`
   to stop), instead of waiting for real time to pass.
