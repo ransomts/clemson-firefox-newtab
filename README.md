@@ -458,9 +458,10 @@ so nothing stale can ever be cached. A few starting points:
   elements (`PLANETS`, `planetStates()`), sized by a rough magnitude,
   named on hover (and beside the planet whenever constellation names are
   on), and never twinkle. The moon is placed by a
-  low-precision ephemeris (`moonState()`) and its phase drawn from the
-  true elongation (`moonPathD()`); it also shows faintly by day when it
-  is up (`DAY_MOON_OPACITY`). Cloud cover from the weather fetch dims
+  low-precision ephemeris (`moonState()`), its phase drawn from the
+  true elongation (`moonPathD()`) and its lit limb turned to face the
+  sun (`moonLitBearing()`, so a low crescent tips into the smile); it
+  also shows faintly by day when it is up (`DAY_MOON_OPACITY`). Cloud cover from the weather fetch dims
   the whole sky continuously (`weatherSkyFactor()`), and on the nights
   of the major meteor showers (`METEOR_SHOWERS`) the streaks come more
   often and radiate from the shower's radiant. From the console,

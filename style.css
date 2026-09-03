@@ -311,10 +311,13 @@
     pointer-events: auto;
   }
 
+  /* The disc turns so its lit limb faces the sun (--moon-tilt, set by
+     layoutMoon); the halo is on the element, so it stays put. */
   #moon svg {
     display: block;
     width: 100%;
     height: auto;
+    transform: rotate(var(--moon-tilt, 0deg));
   }
 
   /* Same idea as .scene.demo-fast-sky itself: keep up with the demo. */

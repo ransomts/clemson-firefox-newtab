@@ -192,12 +192,18 @@ TESTS = {
       applyMoonPhase(0.5); const full = moon.title;
       applyMoonPhase(0.03); const fresh = moon.title;
       applyMoonPhase(null);
+      // A known night: waning gibbous rising in the east, sun deep below
+      // the north-east. Its lit limb must face downward, toward the sun.
+      applyDate(new Date(2026, 8, 3, 2, 0));
+      const tilt = parseFloat(moon.style.getPropertyValue('--moon-tilt'));
+      const litBearing = tilt + (moonPhase() < 0.5 ? 0 : 180);
       __smoke.report({
         'moon element positioned': !!moon,
         'title names the phase': [/lit/.test(realTitle), realTitle],
         'pinned full moon': [/Full moon/.test(full), full],
         'pinned new moon': [/New moon/.test(fresh), fresh],
         'moon above the horizon at 2am (date dependent, informational)': [true, up],
+        'lit limb tilts toward the sun below the horizon': [Number.isFinite(tilt) && Math.sin(litBearing * DEG) > 0, `tilt=${tilt} bearing=${litBearing.toFixed(0)}`],
       });
     """,
     'meteors': r"""

@@ -1335,7 +1335,15 @@
         if (px < -margin || px > W + margin || py < -margin) return null;
         return { px, py, k };
       };
-      return { date, W, horizonY, scale, place };
+      // Unculled: a point below the ridge or behind the viewer still gets
+      // a screen position, however wild. For finding directions, not for
+      // drawing anything.
+      const project = (raDeg, decDeg) => {
+        const { alt, az } = toAltAz(raDeg, decDeg, lst, latRad);
+        const { x, y } = projectSky(alt, az);
+        return { px: cx + x * scale, py: horizonY - y * scale };
+      };
+      return { date, W, horizonY, scale, place, project };
     }
 
     // Place every star, figure and planet. Runs on each sky update (once
@@ -1430,12 +1438,16 @@
     // faint unlit disc reads as a smudge next to the sun.
     function layoutMoon({ instant = false } = {}) {
       if (!moonEl) return;
-      const { date, place } = makePlacer();
+      const { date, place, project } = makePlacer();
       const moon = moonState(date);
       const lit = (1 - Math.cos(moonPhase() * 2 * Math.PI)) / 2;
       const pos = lit >= 0.02 ? place(moon.raDeg, moon.decDeg) : null;
       moonEl.hidden = !pos;
       if (!pos) return;
+      // moonPathD lights the right limb while waxing and the left while
+      // waning; the rotation turns that limb to face the sun.
+      const base = moonPhase() < 0.5 ? 0 : 180;
+      moonEl.style.setProperty('--moon-tilt', `${(moonLitBearing(date, moon, project) - base).toFixed(1)}deg`);
       // The moon's 60s transform transition is for its real drift; a
       // resize should snap it, not send it gliding across the window.
       if (instant) moonEl.style.transition = 'none';
@@ -1472,7 +1484,7 @@
       const lat = DEG * (
         5.128 * Math.sin(F) + 0.281 * Math.sin(l + F) + 0.278 * Math.sin(l - F)
         + 0.173 * Math.sin(2 * D - F) + 0.055 * Math.sin(2 * D - l + F) + 0.046 * Math.sin(2 * D - l - F));
-      const sunLon = wrap(280.459 + 0.98564736 * d) + DEG * (1.915 * Math.sin(M) + 0.020 * Math.sin(2 * M));
+      const sunLon = sunLongitude(d);
       const eps = (23.4393 - 0.0000004 * d) * DEG;
       const ra = Math.atan2(Math.sin(lon) * Math.cos(eps) - Math.tan(lat) * Math.sin(eps), Math.cos(lon));
       const dec = Math.asin(Math.sin(lat) * Math.cos(eps) + Math.cos(lat) * Math.sin(eps) * Math.sin(lon));
@@ -1552,6 +1564,48 @@
           mag: Math.max(p.cap, p.h + 5 * Math.log10(sunDist * earthDist)),
         };
       });
+    }
+
+    // The sun's apparent ecliptic longitude in radians, d days from
+    // J2000 (Astronomical Almanac low precision, a couple of arcminutes).
+    function sunLongitude(d) {
+      const M = ((((357.5291092 + 0.98560028 * d) % 360) + 360) % 360) * DEG;
+      const mean = ((((280.459 + 0.98564736 * d) % 360) + 360) % 360) * DEG;
+      return mean + DEG * (1.915 * Math.sin(M) + 0.020 * Math.sin(2 * M));
+    }
+
+    // The sun's RA/Dec in degrees.
+    function sunState(date) {
+      const d = julianDay(date) - 2451545.0;
+      const lon = sunLongitude(d);
+      const eps = (23.4393 - 0.0000004 * d) * DEG;
+      const ra = Math.atan2(Math.sin(lon) * Math.cos(eps), Math.cos(lon)) / DEG;
+      return { raDeg: ((ra % 360) + 360) % 360, decDeg: Math.asin(Math.sin(eps) * Math.sin(lon)) / DEG };
+    }
+
+    // Screen bearing of the moon's lit limb, in degrees clockwise from
+    // rightward: the direction toward the sun along the great circle
+    // between them. Found by stepping a degree or two along that circle
+    // in equatorial coordinates and projecting both points; the
+    // projection is conformal, so a short step gives the true on-screen
+    // direction even with the sun far below the horizon, where its own
+    // projected position is meaningless. This is what tips a crescent
+    // low in the west into the smile.
+    function moonLitBearing(date, moon, project) {
+      const sun = sunState(date);
+      const unit = ({ raDeg, decDeg }) => [
+        Math.cos(decDeg * DEG) * Math.cos(raDeg * DEG),
+        Math.cos(decDeg * DEG) * Math.sin(raDeg * DEG),
+        Math.sin(decDeg * DEG),
+      ];
+      const m = unit(moon);
+      const s = unit(sun);
+      const step = m.map((v, i) => v + 0.02 * (s[i] - v));
+      const len = Math.hypot(step[0], step[1], step[2]);
+      const toward = { raDeg: Math.atan2(step[1], step[0]) / DEG, decDeg: Math.asin(step[2] / len) / DEG };
+      const a = project(moon.raDeg, moon.decDeg);
+      const b = project(toward.raDeg, toward.decDeg);
+      return Math.atan2(b.py - a.py, b.px - a.px) / DEG;
     }
 
     // Console hook for testing: applyMoonPhase(0.5) pins a full moon,
