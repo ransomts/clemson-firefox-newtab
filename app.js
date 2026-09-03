@@ -905,6 +905,7 @@
     let constellationLabels = []; // one <text> per figure, same order
     let linesSvg = null;
     let planetEls = []; // one per PLANETS entry
+    let planetLabels = []; // their names, shown with the constellation names
     let milkyCanvas = null;
     let milkyBlobs = [];      // built once from MILKY_WAY_PROFILE
     let milkyDrawnAt = null;  // sky time of the last band redraw
@@ -1257,6 +1258,16 @@
         linesSvg.appendChild(text);
         return text;
       });
+      // Planet names live in the same SVG and show in the same mode, set
+      // beside the planet rather than centred on it.
+      planetLabels = PLANETS.map((planet) => {
+        const text = document.createElementNS(SVG_NS, 'text');
+        text.classList.add('planet-label');
+        text.textContent = planet.name;
+        text.style.display = 'none';
+        linesSvg.appendChild(text);
+        return text;
+      });
       starField.appendChild(linesSvg);
 
       const frag = document.createDocumentFragment();
@@ -1398,8 +1409,10 @@
 
       planetStates(date).forEach((planet, i) => {
         const el = planetEls[i];
+        const label = planetLabels[i];
         const pos = place(planet.ra, planet.dec);
         el.hidden = !pos;
+        label.style.display = pos && showNames ? '' : 'none';
         if (!pos) return;
         const size = Math.max(1.6, Math.min(6, 3.5 - 0.5 * planet.mag));
         el.style.width = el.style.height = `${size.toFixed(1)}px`;
@@ -1407,6 +1420,8 @@
         el.style.left = `${pos.px.toFixed(1)}px`;
         el.style.top = `${pos.py.toFixed(1)}px`;
         el.title = `${planet.name} \u00b7 mag ${planet.mag.toFixed(1)}`;
+        label.setAttribute('x', (pos.px + size / 2 + 6).toFixed(1));
+        label.setAttribute('y', (pos.py + 4).toFixed(1));
       });
     }
 

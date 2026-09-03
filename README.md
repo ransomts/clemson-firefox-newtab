@@ -456,7 +456,8 @@ so nothing stale can ever be cached. A few starting points:
   "Constellations" setting picks off, lines, or lines and names). The
   five naked-eye planets are placed from JPL's approximate Keplerian
   elements (`PLANETS`, `planetStates()`), sized by a rough magnitude,
-  named on hover, and never twinkle. The moon is placed by a
+  named on hover (and beside the planet whenever constellation names are
+  on), and never twinkle. The moon is placed by a
   low-precision ephemeris (`moonState()`) and its phase drawn from the
   true elongation (`moonPathD()`); it also shows faintly by day when it
   is up (`DAY_MOON_OPACITY`). Cloud cover from the weather fetch dims

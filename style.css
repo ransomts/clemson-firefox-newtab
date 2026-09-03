@@ -259,6 +259,14 @@
     stroke-linejoin: round;
   }
 
+  /* Planet names: same mode, but mixed case and warmer, so a planet
+     reads as a thing in the sky rather than a region of it. */
+  #constellation-lines text.planet-label {
+    fill: rgba(255, 236, 200, 0.8);
+    text-transform: none;
+    letter-spacing: 0.04em;
+  }
+
   /* Once the sky is fully light the field is kept for the next dusk but
      paused, so nothing animates while invisible. */
   #star-field.dormant .star {

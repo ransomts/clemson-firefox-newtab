@@ -33,19 +33,28 @@ import threading
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 PAGE_FILES = ['index.html', 'style.css', 'app.js', 'resources', 'bookmarks.json', 'bookmarks.example.json']
 
-# Runs after app.js on every test page. report() ships the checks back;
-# settle() is three microtask hops, enough for an animation's finished
-# promise to have fired its handlers. The submit listener sits after the
-# page's own, so it can tell whether the page swallowed a search before it
-# stops the real navigation that would otherwise abort the screenshot.
+# Runs after app.js on every test page, in its own <script> so it survives
+# a test body that fails to parse. report() ships the checks back; settle()
+# is three microtask hops, enough for an animation's finished promise to
+# have fired its handlers. Any script error before the test has reported
+# sends a report at once, so a broken test prints the error rather than
+# "no report received". The submit listener sits after the page's own, so
+# it can tell whether the page swallowed a search before it stops the real
+# navigation that would otherwise abort the screenshot. Test bodies run at
+# top level, so their names must not collide with the page's own.
 PRELUDE = r"""
 (() => {
   const errors = [];
-  window.addEventListener('error', (e) => errors.push(e.message + ' @' + e.lineno));
+  window.addEventListener('error', (e) => {
+    errors.push(e.message + ' @' + e.lineno);
+    if (window.__smoke && !window.__smoke.reported) window.__smoke.report({ 'test ran to its report': false });
+  });
   window.__smoke = {
     errors,
+    reported: false,
     submitPrevented: null,
     report(checks) {
+      this.reported = true;
       return fetch('/report', {
         method: 'POST', keepalive: true, headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ name: __SMOKE_NAME__, checks, errors }),
@@ -125,17 +134,26 @@ TESTS = {
     'names': r"""
       saveSettings({ constellations: 'names' }); applyTime(23);
       const withNames = __smoke.shownLabels();
+      const shownPlanetLabels = () => [...document.querySelectorAll('#constellation-lines text.planet-label')].filter((t) => t.style.display !== 'none').map((t) => t.textContent);
+      const planetsUp = [...document.querySelectorAll('.planet:not([hidden])')].length;
+      const planetNames = shownPlanetLabels();
       saveSettings({ constellations: 'lines' }); layoutSky();
       const linesOnly = __smoke.shownLabels();
+      const planetNamesLinesOnly = shownPlanetLabels().length;
       saveSettings({ constellations: 'off' }); layoutSky();
       const svgHidden = document.getElementById('constellation-lines').style.display === 'none';
       saveSettings({ constellations: 'on' }); layoutSky();
+      const legacyIsLines = document.getElementById('constellation-lines').style.display === '' && __smoke.shownLabels() === 0;
+      // Leave the page in the names mode so the screenshot shows the labels.
+      saveSettings({ constellations: 'names' }); layoutSky();
       __smoke.report({
         'names shown when chosen': [withNames > 5, withNames],
         'names hidden for lines only': linesOnly === 0,
         'figures hidden when off': svgHidden,
-        'legacy "on" still means lines': document.getElementById('constellation-lines').style.display === '' && __smoke.shownLabels() === 0,
+        'legacy "on" still means lines': legacyIsLines,
         'a name survived UTF-8': [...document.querySelectorAll('#constellation-lines text')].some((t) => t.textContent === 'Boötes'),
+        'every planet up is labelled with names on': [planetNames.length === planetsUp, `${planetNames.join(', ') || 'none'} (${planetsUp} up)`],
+        'planet labels hidden for lines only': planetNamesLinesOnly === 0,
       });
     """,
     'weather': r"""
@@ -290,8 +308,9 @@ def write_page(root, staging, name, script):
     tag = '<script src="app.js"></script>'
     if tag not in html:
         sys.exit('index.html no longer loads app.js the way this harness expects')
-    body = PRELUDE.replace('__SMOKE_NAME__', json.dumps(name)) + '\n' + script
-    (staging / f'{name}.html').write_text(html.replace(tag, tag + '<script>' + body + '</script>'), encoding='utf-8')
+    prelude = PRELUDE.replace('__SMOKE_NAME__', json.dumps(name))
+    appended = f'<script>{prelude}</script><script>{script}</script>'
+    (staging / f'{name}.html').write_text(html.replace(tag, tag + appended), encoding='utf-8')
 
 
 def run_firefox(firefox, profile, url, png, timeout):
