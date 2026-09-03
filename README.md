@@ -450,9 +450,17 @@ so nothing stale can ever be cached. A few starting points:
   (packed by the same script into `CONSTELLATION_LINES` and
   `CONSTELLATION_NAMES`, drawn as one SVG path and label each; the
   "Constellations" setting picks off, lines, or lines and names). The
-  moon is placed by a low-precision ephemeris (`moonState()`) and its
-  phase drawn from the true elongation (`moonPathD()`). From the
-  console, `applyTime(23)` shows tonight's sky at 11pm,
+  five naked-eye planets are placed from JPL's approximate Keplerian
+  elements (`PLANETS`, `planetStates()`), sized by a rough magnitude,
+  named on hover, and never twinkle. The moon is placed by a
+  low-precision ephemeris (`moonState()`) and its phase drawn from the
+  true elongation (`moonPathD()`); it also shows faintly by day when it
+  is up (`DAY_MOON_OPACITY`). Cloud cover from the weather fetch dims
+  the whole sky continuously (`weatherSkyFactor()`), and on the nights
+  of the major meteor showers (`METEOR_SHOWERS`) the streaks come more
+  often and radiate from the shower's radiant. From the console,
+  `applyTime(23)` shows tonight's sky at 11pm, `applyDate(new Date(2026,
+  11, 14, 23))` pins a whole date (a winter sky, the Geminids),
   `startTimeDemo()` sweeps a whole night, and `applyMoonPhase(0.5)`
   pins a full moon (`applyMoonPhase(null)` to release it).
 - **Smoke tests** — `scripts/firefox-newtab-smoke` stages the page,

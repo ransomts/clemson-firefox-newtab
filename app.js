@@ -578,6 +578,7 @@
     // Remembered so a weather-effects toggle can re-apply without another
     // fetch, and so the temperature-unit toggle knows what to re-request.
     let lastWeatherCategory = 'clear';
+    let lastCloudCover = null; // percent from the last fetch, null if unknown
     let lastCoords = null;
 
     function renderWeatherWidget() {
@@ -639,10 +640,11 @@
       }
     }
 
-    function applyWeather(summary, category) {
+    function applyWeather(summary, category, cloudCover = null) {
       weatherSummary = summary;
       renderWeatherWidget();
       lastWeatherCategory = category;
+      lastCloudCover = Number.isFinite(cloudCover) ? cloudCover : null;
       document.documentElement.style.setProperty('--weather-tint', WEATHER_TINTS[category]);
       applyWeatherFX(category);
       updateNightSky();
@@ -659,12 +661,12 @@
       if (cached && cached.key === cacheKey) {
         // Paint a stale reading rather than nothing: a temperature a few
         // minutes old beats a widget that stays empty for half a second.
-        applyWeather(cached.summary, cached.category);
+        applyWeather(cached.summary, cached.category, cached.cloudCover);
         if (Date.now() - cached.ts < WEATHER_TTL_MS) return;
       }
       try {
         const url = `https://api.open-meteo.com/v1/forecast?latitude=${lat}&longitude=${lng}` +
-          `&current=temperature_2m,weather_code,is_day` +
+          `&current=temperature_2m,weather_code,is_day,cloud_cover` +
           `&temperature_unit=${celsius ? 'celsius' : 'fahrenheit'}&timezone=auto`;
         const res = await fetch(url);
         const { current } = await res.json();
@@ -673,7 +675,7 @@
         const emoji = current.is_day ? info.emojiDay : info.emojiNight;
 
         weatherSummary = `${emoji} ${Math.round(current.temperature_2m)}${celsius ? '°C' : '°F'} · ${info.label}`;
-        applyWeather(weatherSummary, info.category);
+        applyWeather(weatherSummary, info.category, current.cloud_cover);
         writeWeatherCache({
           key: cacheKey,
           // Stored so the next load can seed a position before geolocation
@@ -683,6 +685,7 @@
           ts: Date.now(),
           summary: weatherSummary,
           category: info.category,
+          cloudCover: current.cloud_cover,
         });
       } catch (err) {
         console.error('Weather fetch failed:', err);
@@ -768,13 +771,25 @@
     // below lets you pin the sky to a specific hour for testing, the same
     // way applyWeatherFX(category) previews a weather condition.
     let timeOverrideHour = null;
+    // applyDate(new Date(2026, 11, 14, 23)) pins a whole date - a winter
+    // sky, a meteor shower peak - and sets the hour override to match so
+    // the colors agree. applyDate(null) and clearTimeOverride() both
+    // return to the real clock.
+    let dateOverride = null;
 
     function applyTime(hour) {
       timeOverrideHour = hour;
       updateSky();
     }
 
+    function applyDate(date) {
+      dateOverride = date;
+      timeOverrideHour = date ? date.getHours() + date.getMinutes() / 60 : null;
+      updateSky();
+    }
+
     function clearTimeOverride() {
+      dateOverride = null;
       timeOverrideHour = null;
       updateSky();
     }
@@ -876,6 +891,7 @@
     let constellationPaths = []; // one <path> per figure, same order
     let constellationLabels = []; // one <text> per figure, same order
     let linesSvg = null;
+    let planetEls = []; // one per PLANETS entry
     const SVG_NS = 'http://www.w3.org/2000/svg';
     let shootingStarTimer = null;
     let shootingStarsSeen = 0;
@@ -1011,6 +1027,7 @@
     // when applyTime()/startTimeDemo() are driving the sky colors, so the
     // stars sweep along with them.
     function skyDate() {
+      if (dateOverride) return dateOverride;
       if (timeOverrideHour === null) return new Date();
       const midnight = new Date();
       midnight.setHours(0, 0, 0, 0);
@@ -1028,17 +1045,34 @@
       // at sunsetHour itself, so stars should stay all but invisible for
       // the first half hour and likewise be gone well before sunrise.
       const eased = n * n * (3 - 2 * n);
-      return eased * (NIGHT_SKY_WEATHER[lastWeatherCategory] ?? 1);
+      return eased * weatherSkyFactor();
     }
+
+    // How much of the sky shows through the weather. Fog and
+    // precipitation hide it outright; otherwise the cloud cover figure
+    // from the last fetch sets it - half cover leaves two thirds, full
+    // cover a tenth - with the category's fixed value as the fallback
+    // when no figure is known.
+    function weatherSkyFactor() {
+      const fixed = NIGHT_SKY_WEATHER[lastWeatherCategory] ?? 1;
+      if (fixed === 0 || lastCloudCover === null) return fixed;
+      const cover = Math.max(0, Math.min(1, lastCloudCover / 100));
+      return 1 - 0.9 * Math.pow(cover, 1.5);
+    }
+
+    // The moon is up in daylight half the time, so it has its own
+    // opacity: full alongside the stars, faint by day, still subject to
+    // the weather and to the night-sky setting.
+    const DAY_MOON_OPACITY = 0.45;
 
     function updateNightSky() {
       const opacity = nightSkyOpacity();
-      document.documentElement.style.setProperty('--star-opacity', opacity.toFixed(3));
+      const root = document.documentElement.style;
+      root.setProperty('--star-opacity', opacity.toFixed(3));
       if (opacity > 0) {
         ensureNightSky();
         starField.classList.remove('dormant');
         layoutSky();
-        updateMoon();
         scheduleShootingStar();
       } else if (starField) {
         // Pausing the instant the target hits zero freezes the twinkle a
@@ -1046,6 +1080,25 @@
         // where nobody can tell.
         starField.classList.add('dormant');
       }
+
+      const moonOpacity = loadSettings().nightSky === 'off'
+        ? 0 : Math.max(opacity, DAY_MOON_OPACITY * weatherSkyFactor());
+      root.setProperty('--moon-opacity', moonOpacity.toFixed(3));
+      if (moonOpacity > 0) {
+        ensureMoon();
+        layoutMoon();
+        updateMoon();
+      }
+    }
+
+    function ensureMoon() {
+      if (moonEl) return;
+      moonEl = document.createElement('div');
+      moonEl.id = 'moon';
+      moonEl.hidden = true; // until layoutMoon() finds it above the ridge
+      // Like the paw: something you can click that doesn't look like it.
+      moonEl.addEventListener('click', () => spawnUfo());
+      document.querySelector('.scene').appendChild(moonEl);
     }
 
     // Rough spectral tint from the B-V colour index: blue-white for the
@@ -1067,6 +1120,7 @@
       starData = decodeStarCatalog(STAR_CATALOG);
       starField = document.createElement('div');
       starField.id = 'star-field';
+      starField.setAttribute('aria-hidden', 'true'); // decoration, thousands of it
 
       // Constellation figures go in first so the stars paint over them.
       constellationData = decodeConstellations(CONSTELLATION_LINES);
@@ -1078,6 +1132,7 @@
       });
       linesSvg = document.createElementNS(SVG_NS, 'svg');
       linesSvg.id = 'constellation-lines';
+      linesSvg.setAttribute('aria-hidden', 'true');
       constellationPaths = constellationData.map((figure) => {
         const path = document.createElementNS(SVG_NS, 'path');
         path.dataset.id = figure.id;
@@ -1118,32 +1173,35 @@
         return el;
       });
       starField.appendChild(frag);
-      scene.appendChild(starField);
 
-      moonEl = document.createElement('div');
-      moonEl.id = 'moon';
-      moonEl.hidden = true;
-      // Like the paw: something you can click that doesn't look like it.
-      moonEl.addEventListener('click', () => spawnUfo());
-      scene.appendChild(moonEl);
+      // Planets go in after the stars so they paint over them. They never
+      // twinkle - the one thing that gives a planet away to the eye.
+      planetEls = PLANETS.map((planet) => {
+        const el = document.createElement('div');
+        el.className = 'star planet named';
+        el.style.background = planet.color;
+        el.style.setProperty('--star-base', '1');
+        el.hidden = true;
+        starField.appendChild(el);
+        return el;
+      });
+
+      scene.appendChild(starField);
     }
 
-    // Place every star and the moon for skyDate() at skyCoords(). Runs on
-    // each sky update (once a minute) and on resize; ~1600 stars take well
-    // under a millisecond. Stars below the ridge or behind the viewer
-    // are hidden rather than moved off-screen so they cost no layout.
-    function layoutSky({ instant = false } = {}) {
-      if (!starField) return;
+    // Everything that maps a sky position to the window for skyDate() at
+    // skyCoords(), computed once per layout. place() takes RA/Dec in
+    // degrees and returns window pixels, or null when the point is below
+    // the ridge or out of frame. margin: how far outside the window a
+    // point may land and still count. Stars need almost none; line
+    // vertices get half a window, so a figure's edge segments run off
+    // screen instead of stopping at the last vertex that was inside.
+    function makePlacer() {
       const date = skyDate();
       const { lat, lng } = skyCoords();
       const latRad = lat * DEG;
       const lst = localSiderealDeg(date, lng);
       const { W, horizonY, cx, scale } = skyFrame();
-
-      // margin: how far outside the window a point may land and still
-      // count. Stars need almost none; line vertices get half a window,
-      // so a figure's edge segments run off screen instead of stopping
-      // at the last vertex that was inside.
       const place = (raDeg, decDeg, margin = 20) => {
         const { alt, az } = toAltAz(raDeg, decDeg, lst, latRad);
         if (alt < -0.5 * DEG) return null;
@@ -1157,6 +1215,16 @@
         if (px < -margin || px > W + margin || py < -margin) return null;
         return { px, py };
       };
+      return { date, W, horizonY, place };
+    }
+
+    // Place every star, figure and planet. Runs on each sky update (once
+    // a minute) and on resize; ~1600 stars take well under a
+    // millisecond. Anything below the ridge or behind the viewer is
+    // hidden rather than moved off-screen so it costs no layout.
+    function layoutSky() {
+      if (!starField) return;
+      const { date, W, horizonY, place } = makePlacer();
 
       for (let i = 0; i < starEls.length; i++) {
         const pos = place(starData[i].ra, starData[i].dec);
@@ -1214,23 +1282,46 @@
         }
       }
 
+      planetStates(date).forEach((planet, i) => {
+        const el = planetEls[i];
+        const pos = place(planet.ra, planet.dec);
+        el.hidden = !pos;
+        if (!pos) return;
+        const size = Math.max(1.6, Math.min(6, 3.5 - 0.5 * planet.mag));
+        el.style.width = el.style.height = `${size.toFixed(1)}px`;
+        el.classList.toggle('bright', planet.mag < 1.6);
+        el.style.left = `${pos.px.toFixed(1)}px`;
+        el.style.top = `${pos.py.toFixed(1)}px`;
+        el.title = `${planet.name} \u00b7 mag ${planet.mag.toFixed(1)}`;
+      });
+    }
+
+    // The moon is placed separately because it can be up by day, when
+    // the star field doesn't exist. A new moon is hidden outright: the
+    // faint unlit disc reads as a smudge next to the sun.
+    function layoutMoon({ instant = false } = {}) {
+      if (!moonEl) return;
+      const { date, place } = makePlacer();
       const moon = moonState(date);
-      const pos = place(moon.raDeg, moon.decDeg);
+      const lit = (1 - Math.cos(moonPhase() * 2 * Math.PI)) / 2;
+      const pos = lit >= 0.02 ? place(moon.raDeg, moon.decDeg) : null;
       moonEl.hidden = !pos;
-      if (pos) {
-        // The moon's 60s transform transition is for its real drift; a
-        // resize should snap it, not send it gliding across the window.
-        if (instant) moonEl.style.transition = 'none';
-        moonEl.style.setProperty('--moon-x', pos.px.toFixed(1));
-        moonEl.style.setProperty('--moon-y', pos.py.toFixed(1));
-        if (instant) {
-          void moonEl.offsetWidth; // commit the snapped position first
-          moonEl.style.transition = '';
-        }
+      if (!pos) return;
+      // The moon's 60s transform transition is for its real drift; a
+      // resize should snap it, not send it gliding across the window.
+      if (instant) moonEl.style.transition = 'none';
+      moonEl.style.setProperty('--moon-x', pos.px.toFixed(1));
+      moonEl.style.setProperty('--moon-y', pos.py.toFixed(1));
+      if (instant) {
+        void moonEl.offsetWidth; // commit the snapped position first
+        moonEl.style.transition = '';
       }
     }
 
-    window.addEventListener('resize', () => layoutSky({ instant: true }));
+    window.addEventListener('resize', () => {
+      layoutSky();
+      layoutMoon({ instant: true });
+    });
 
     // Moon: the Astronomical Almanac's low-precision series (the leading
     // terms of Meeus ch. 47) for ecliptic longitude and latitude, good to
@@ -1259,6 +1350,79 @@
       let phase = ((lon - sunLon) / (2 * Math.PI)) % 1;
       if (phase < 0) phase += 1;
       return { raDeg: ra / DEG, decDeg: dec / DEG, phase }; // phase: 0 new, 0.5 full
+    }
+
+    // Planets: Keplerian elements from JPL's "Approximate Positions of
+    // the Planets" (Standish; the 1800-2050 table), each at J2000 with
+    // its rate per century: a (AU), e, I, L, longitude of perihelion,
+    // longitude of the ascending node, in degrees. Geocentric positions
+    // come from subtracting the Earth-Moon barycentre's; no light-time
+    // or aberration, so good to a few arcminutes - a pixel here. h is
+    // the absolute magnitude V(1,0); the cap stands in for the phase
+    // term, which matters only for the inner two.
+    const PLANETS = [
+      { name: 'Mercury', color: '#E8E8F0', h: -0.6, cap: -1.0,
+        el: [0.38709927, 0.20563593, 7.00497902, 252.25032350, 77.45779628, 48.33076593],
+        rate: [0.00000037, 0.00001906, -0.00594749, 149472.67411175, 0.16047689, -0.12534081] },
+      { name: 'Venus', color: '#FFF7E0', h: -4.4, cap: -4.6,
+        el: [0.72333566, 0.00677672, 3.39467605, 181.97909950, 131.60246718, 76.67984255],
+        rate: [0.00000390, -0.00004107, -0.00078890, 58517.81538729, 0.00268329, -0.27769418] },
+      { name: 'Mars', color: '#FFB090', h: -1.5, cap: -2.9,
+        el: [1.52371034, 0.09339410, 1.84969142, -4.55343205, -23.94362959, 49.55953891],
+        rate: [0.00001847, 0.00007882, -0.00813131, 19140.30268499, 0.44441088, -0.29257343] },
+      { name: 'Jupiter', color: '#FFF2D6', h: -9.4, cap: -2.9,
+        el: [5.20288700, 0.04838624, 1.30439695, 34.39644051, 14.72847983, 100.47390909],
+        rate: [-0.00011607, -0.00013253, -0.00183714, 3034.74612775, 0.21252668, 0.20469106] },
+      { name: 'Saturn', color: '#F5E6B8', h: -8.9, cap: -0.5,
+        el: [9.53667594, 0.05386179, 2.48599187, 49.95424423, 92.59887831, 113.66242448],
+        rate: [-0.00125060, -0.00050991, 0.00193609, 1222.49362201, -0.41897216, -0.28867794] },
+    ];
+    const EARTH_MOON = {
+      el: [1.00000261, 0.01671123, -0.00001531, 100.46457166, 102.93768193, 0],
+      rate: [0.00000562, -0.00004392, -0.01294668, 35999.37244981, 0.32327364, 0],
+    };
+
+    // Heliocentric ecliptic position in AU at T centuries from J2000.
+    function heliocentric(body, T) {
+      const [a, e, I, L, wbar, node] = body.el.map((v, i) => v + body.rate[i] * T);
+      const w = (wbar - node) * DEG;
+      const M = ((((L - wbar) % 360) + 540) % 360 - 180) * DEG;
+      let E = M + e * Math.sin(M); // Kepler's equation, Newton's method
+      for (let i = 0; i < 6; i++) E -= (E - e * Math.sin(E) - M) / (1 - e * Math.cos(E));
+      const xp = a * (Math.cos(E) - e);
+      const yp = a * Math.sqrt(1 - e * e) * Math.sin(E);
+      const cw = Math.cos(w), sw = Math.sin(w);
+      const cn = Math.cos(node * DEG), sn = Math.sin(node * DEG);
+      const ci = Math.cos(I * DEG), si = Math.sin(I * DEG);
+      return {
+        x: (cw * cn - sw * sn * ci) * xp + (-sw * cn - cw * sn * ci) * yp,
+        y: (cw * sn + sw * cn * ci) * xp + (-sw * sn + cw * cn * ci) * yp,
+        z: (sw * si) * xp + (cw * si) * yp,
+      };
+    }
+
+    // Geocentric RA/Dec in degrees plus a rough visual magnitude for each
+    // planet, in PLANETS order.
+    function planetStates(date) {
+      const d = julianDay(date) - 2451545.0;
+      const T = d / 36525;
+      const eps = (23.4393 - 0.0000004 * d) * DEG;
+      const earth = heliocentric(EARTH_MOON, T);
+      return PLANETS.map((p) => {
+        const h = heliocentric(p, T);
+        const gx = h.x - earth.x, gy = h.y - earth.y, gz = h.z - earth.z;
+        const sunDist = Math.hypot(h.x, h.y, h.z);
+        const earthDist = Math.hypot(gx, gy, gz);
+        const yq = gy * Math.cos(eps) - gz * Math.sin(eps);
+        const zq = gy * Math.sin(eps) + gz * Math.cos(eps);
+        const ra = Math.atan2(yq, gx) / DEG;
+        return {
+          name: p.name, color: p.color,
+          ra: ((ra % 360) + 360) % 360,
+          dec: Math.asin(zq / earthDist) / DEG,
+          mag: Math.max(p.cap, p.h + 5 * Math.log10(sunDist * earthDist)),
+        };
+      });
     }
 
     // Console hook for testing: applyMoonPhase(0.5) pins a full moon,
@@ -1330,6 +1494,36 @@
       moonEl.title = `${moonPhaseName(phase)} · ${lit}% lit`;
     }
 
+    // The major annual showers: peak (month, day), radiant J2000 RA/Dec,
+    // zenithal hourly rate at maximum, and how many days either side the
+    // stream is worth showing. Between them the streaks are sporadic.
+    const METEOR_SHOWERS = [
+      { name: 'Quadrantids', month: 1, day: 3.5, ra: 230, dec: 49, zhr: 120, span: 1 },
+      { name: 'Lyrids', month: 4, day: 22, ra: 271, dec: 34, zhr: 18, span: 2 },
+      { name: 'Eta Aquariids', month: 5, day: 6, ra: 338, dec: -1, zhr: 50, span: 3 },
+      { name: 'Perseids', month: 8, day: 12.5, ra: 48, dec: 58, zhr: 100, span: 3 },
+      { name: 'Orionids', month: 10, day: 21, ra: 95, dec: 16, zhr: 20, span: 3 },
+      { name: 'Leonids', month: 11, day: 17, ra: 152, dec: 22, zhr: 15, span: 2 },
+      { name: 'Geminids', month: 12, day: 14, ra: 112, dec: 33, zhr: 150, span: 2 },
+      { name: 'Ursids', month: 12, day: 22, ra: 217, dec: 76, zhr: 10, span: 1 },
+    ];
+
+    // The shower in progress on the sky's date, with a 0-1 strength that
+    // peaks at the maximum and falls off linearly over the span, or null.
+    function activeShower(date = skyDate()) {
+      const dayOfYear = (d) => (d - new Date(d.getFullYear(), 0, 1)) / 86400000;
+      const now = dayOfYear(date);
+      let best = null;
+      for (const shower of METEOR_SHOWERS) {
+        const peak = dayOfYear(new Date(date.getFullYear(), shower.month - 1, 1)) + shower.day - 1;
+        const away = Math.abs(now - peak);
+        if (away > shower.span) continue;
+        const strength = 1 - away / shower.span;
+        if (!best || strength * shower.zhr > best.strength * best.zhr) best = { ...shower, strength };
+      }
+      return best;
+    }
+
     // One pending timer at most. The first streak comes within seconds so
     // a lingering tab has a fair chance of catching it; after one has
     // actually been seen they turn rare, as they should be. A tick that
@@ -1337,7 +1531,11 @@
     // the sky has brightened spawns nothing and doesn't count.
     function scheduleShootingStar() {
       if (shootingStarTimer !== null || reducedMotion.matches) return;
-      const seconds = shootingStarsSeen === 0 ? 4 + Math.random() * 8 : 30 + Math.random() * 60;
+      // A shower shortens the wait in proportion to its rate: the
+      // Perseids at peak bring one every ten or twenty seconds.
+      const shower = activeShower();
+      const rate = shower ? 1 + (shower.zhr / 30) * shower.strength : 1;
+      const seconds = (shootingStarsSeen === 0 ? 4 + Math.random() * 8 : 30 + Math.random() * 60) / rate;
       shootingStarTimer = setTimeout(() => {
         shootingStarTimer = null;
         if (document.visibilityState === 'visible' && nightSkyOpacity() > 0.2) {
@@ -1355,14 +1553,40 @@
       ensureNightSky();
       const streak = document.createElement('div');
       streak.className = 'shooting-star';
-      // Starts somewhere in the upper sky and heads down-left or
-      // down-right; the angle is measured clockwise from horizontal, so
-      // 180 minus it mirrors the flight.
-      const goingRight = Math.random() < 0.5;
-      const pitch = 18 + Math.random() * 22;
-      streak.style.left = `${(goingRight ? 5 + Math.random() * 50 : 45 + Math.random() * 50).toFixed(1)}%`;
-      streak.style.top = `${(3 + Math.random() * 30).toFixed(1)}%`;
-      streak.style.setProperty('--shoot-angle', `${(goingRight ? pitch : 180 - pitch).toFixed(1)}deg`);
+      // During a shower the streaks radiate: each starts somewhere in the
+      // sky and flies directly away from the radiant, which is what makes
+      // a shower look like one. The radiant is usually off screen (Perseus
+      // rises in the north-east, far beyond the left edge in this
+      // projection; a northern radiant projects above the top), so it is
+      // allowed a very wide margin and only its direction matters. A
+      // radiant below the horizon means sporadic streaks as usual.
+      const shower = activeShower();
+      let placed = false;
+      if (shower) {
+        const { W, horizonY, place } = makePlacer();
+        const radiant = place(shower.ra, shower.dec, 20 * Math.max(W, window.innerHeight));
+        if (radiant) {
+          const x = (0.05 + Math.random() * 0.9) * W;
+          const y = Math.random() * horizonY * 0.85;
+          const bearing = Math.atan2(y - radiant.py, x - radiant.px) / DEG;
+          // The head is the element's right end, so the start point is
+          // offset by the streak's length.
+          streak.style.left = `${(x - 120).toFixed(1)}px`;
+          streak.style.top = `${y.toFixed(1)}px`;
+          streak.style.setProperty('--shoot-angle', `${bearing.toFixed(1)}deg`);
+          placed = true;
+        }
+      }
+      if (!placed) {
+        // Sporadic: somewhere in the upper sky, heading down-left or
+        // down-right; the angle is measured clockwise from horizontal,
+        // so 180 minus it mirrors the flight.
+        const goingRight = Math.random() < 0.5;
+        const pitch = 18 + Math.random() * 22;
+        streak.style.left = `${(goingRight ? 5 + Math.random() * 50 : 45 + Math.random() * 50).toFixed(1)}%`;
+        streak.style.top = `${(3 + Math.random() * 30).toFixed(1)}%`;
+        streak.style.setProperty('--shoot-angle', `${(goingRight ? pitch : 180 - pitch).toFixed(1)}deg`);
+      }
       streak.style.setProperty('--shoot-dist', `${Math.round(25 + Math.random() * 25)}vw`);
       streak.style.animationDuration = `${(0.7 + Math.random() * 0.5).toFixed(2)}s`;
       streak.addEventListener('animationend', () => streak.remove());
@@ -2129,6 +2353,7 @@
       const scene = document.querySelector('.scene');
       const ufo = document.createElement('div');
       ufo.className = 'ufo';
+      ufo.setAttribute('aria-hidden', 'true');
       const lights = [['10', '#FF6B6B'], ['21', '#FFD166'], ['32', '#6BFFB8'], ['43', '#6BC9FF'], ['54', '#FF8BE6']]
         .map(([x, color], i) => `<circle class="ufo-light" cx="${x}" cy="21.5" r="1.7" fill="${color}" style="animation-delay: ${(-i * 0.24).toFixed(2)}s"></circle>`)
         .join('');

@@ -17,6 +17,8 @@
        keyframes and the weather. 0 here means a daytime tab never even
        builds the star field (see ensureNightSky). */
     --star-opacity: 0;
+    /* The moon's own: full with the stars, faint by day when it's up. */
+    --moon-opacity: 0;
   }
 
   html, body {
@@ -283,7 +285,7 @@
     left: 0;
     z-index: 4;
     width: clamp(30px, 3.4vw, 60px);
-    opacity: var(--star-opacity);
+    opacity: var(--moon-opacity);
     transform: translate(calc(var(--moon-x, 0) * 1px - 50%), calc(var(--moon-y, 0) * 1px - 50%));
     transition: opacity 4s ease, transform 60s linear;
     filter: drop-shadow(0 0 8px rgba(255, 236, 190, 0.35));
