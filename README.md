@@ -441,9 +441,13 @@ so nothing stale can ever be cached. A few starting points:
   is the left edge, due west the right, and the horizon sits on the ridge
   of the skyline layer, with a stereographic projection so constellations
   keep their shapes (`projectSky()`, `skyFrame()`). Stars come from the
-  Yale Bright Star Catalogue to magnitude 5, packed into `STAR_CATALOG`
+  Yale Bright Star Catalogue to magnitude 5.5, packed into `STAR_CATALOG`
   by `scripts/firefox-newtab-stars` (run it with `--mag` to change the
-  depth); the 128 with IAU proper names show them on hover. Size, halo
+  depth); a "Sky darkness" setting caps what is drawn at city, suburban
+  or dark-sky depth and scales the Milky Way, a band of soft blobs along
+  the galactic plane painted on a half-resolution canvas
+  (`MILKY_WAY_PROFILE`, `drawMilkyWay()`). The 128 stars with IAU proper
+  names show them on hover. Size, halo
   and tint follow magnitude and colour index (`ensureNightSky()`,
   `starColor()`). Constellation figures and names come from
   d3-celestial's `constellations.lines.json` and `constellations.json`

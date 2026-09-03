@@ -199,6 +199,28 @@ TESTS = {
         'date override clears': timeOverrideHour === null && skyDate().getFullYear() === new Date().getFullYear(),
       });
     """,
+    'depth': r"""
+      applyTime(23);
+      const canvas = () => document.getElementById('milky-way');
+      const at = (depth) => { saveSettings({ skyDepth: depth }); layoutSky({ redrawMilkyWay: true }); return __smoke.visibleStars(); };
+      const city = at('city'); const cityBand = canvas().style.display;
+      const suburbs = at('suburbs'); const suburbsBand = canvas().style.display;
+      const dark = at('dark');
+      // Any painted pixel at all in the band?
+      const ctx = canvas().getContext('2d');
+      const data = ctx.getImageData(0, 0, canvas().width, canvas().height).data;
+      let painted = 0;
+      for (let i = 3; i < data.length; i += 4) if (data[i] > 0) painted++;
+      __smoke.report({
+        'settings panel lists sky darkness': /Sky darkness/.test(document.getElementById('settings-panel').textContent),
+        'city shows fewer stars than the suburbs': [city < suburbs, `${city} < ${suburbs}`],
+        'suburbs show fewer than a dark sky': [suburbs < dark, `${suburbs} < ${dark}`],
+        'city hides the Milky Way': cityBand === 'none',
+        'suburbs show it': suburbsBand === '',
+        'band canvas is half resolution': [canvas().width === Math.ceil(innerWidth / 2), `${canvas().width}x${canvas().height}`],
+        'band has paint on it': [painted > 1000, painted],
+      });
+    """,
     'ufo': r"""
       applyTime(2);
       const count = () => document.querySelectorAll('.ufo').length;

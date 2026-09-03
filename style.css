@@ -214,6 +214,17 @@
     50%      { opacity: calc(var(--star-base, 0.8) * 0.25);  transform: translate(-50%, -50%) scale(0.8); }
   }
 
+  /* The Milky Way: a canvas at half resolution (the blur is welcome for
+     a diffuse band), sized by the script to the sky above the ridge, and
+     the first thing in the field so figures and stars paint over it. */
+  #milky-way {
+    position: absolute;
+    top: 0;
+    left: 0;
+    width: 100%;
+    pointer-events: none;
+  }
+
   /* Constellation figures: one <path> per constellation, redrawn by
      layoutSky() along with the stars. Inside #star-field so they share
      its opacity and weather dimming, and its first child so the stars

@@ -27,9 +27,10 @@ the packing here and the decoding there have to agree:
 
 Inlining rather than fetching keeps the catalog inside the one immutable,
 bytecode-cached app.js the server already stamps, so a night tab costs
-no extra request. ~1600 stars pack to ~15KB.
+no extra request. ~2800 stars to magnitude 5.5 pack to ~25KB; the page's
+sky-darkness setting caps what is drawn at runtime.
 
-    scripts/firefox-newtab-stars                     # mag 5.0, fetch both
+    scripts/firefox-newtab-stars                     # mag 5.5, fetch both
     scripts/firefox-newtab-stars --mag 4.5
     scripts/firefox-newtab-stars --source ~/Downloads/bsc5.dat.gz \
         --lines-source ~/Downloads/constellations.lines.json \
@@ -196,7 +197,7 @@ def pack_names(geojson, line_ids):
 
 def main():
     ap = argparse.ArgumentParser(description=__doc__.split('\n')[0])
-    ap.add_argument('--mag', type=float, default=5.0, help='faintest V magnitude to keep (default 5.0)')
+    ap.add_argument('--mag', type=float, default=5.5, help='faintest V magnitude to keep (default 5.5)')
     ap.add_argument('--source', help='local bsc5.dat or bsc5.dat.gz instead of fetching')
     ap.add_argument('--lines-source', help='local constellations.lines.json instead of fetching')
     ap.add_argument('--names-source', help='local constellations.json instead of fetching')
